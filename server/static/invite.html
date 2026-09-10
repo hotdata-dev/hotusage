@@ -39,7 +39,7 @@
     // a pre-filled address means a single-use invite bound to it: the server
     // ignores anything else posted, so don't let it be edited
     var email = document.getElementById('email');
-    if (email.value) email.readOnly = true; else email.focus();
+    if ("{{FIXED}}") email.readOnly = true; else email.focus();
     // no token = invalid/expired invite: hide the form, keep the message
     if (!"{{TOKEN}}") {
       document.getElementById('form').style.display = 'none';

@@ -840,7 +840,7 @@ load();
   }
 
   $('#inviteBtn').addEventListener('click', () => {
-    reset(); email.value = '';
+    reset(); email.value = ''; domain.value = ''; maxUses.value = '';
     modal.hidden = false; email.focus();
   });
   $('#inviteClose').addEventListener('click', () => { modal.hidden = true; });

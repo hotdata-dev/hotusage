@@ -459,6 +459,7 @@ class AuthStore:
 
     # --- reusable team links -------------------------------------------------
     TEAM_INVITE_TTL = 30 * 24 * 3600
+    MAX_TEAM_INVITE_USES = 1000
     MAX_TEAM_INVITE_TTL = 90 * 24 * 3600
 
     def create_team_invite(self, org_slug, invited_by, domain="",
@@ -469,8 +470,8 @@ class AuthStore:
         if domain and not re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)+$", domain):
             raise ValueError("that does not look like an email domain")
         try:
-            max_uses = max(0, int(max_uses or 0))
-        except (TypeError, ValueError):
+            max_uses = min(max(0, int(max_uses or 0)), self.MAX_TEAM_INVITE_USES)
+        except (TypeError, ValueError, OverflowError):
             raise ValueError("max uses must be a whole number")
         ttl = self.TEAM_INVITE_TTL
         if expires_days:
@@ -727,8 +728,9 @@ class Handler(BaseHTTPRequestHandler):
     _rate = {}
     _rate_lock = threading.Lock()
     RATE_LIMIT, RATE_WINDOW = 5, 3600
+    INVITE_RATE_LIMIT = 30
 
-    def _rate_limited(self, bucket):
+    def _rate_limited(self, bucket, limit=None):
         # rightmost X-Forwarded-For entry: proxies (App Runner/ALB) append the
         # real peer to a client-supplied header, so position 0 is spoofable.
         fwd = self.headers.get("X-Forwarded-For", "")
@@ -740,7 +742,7 @@ class Handler(BaseHTTPRequestHandler):
                       if now - v[-1] >= self.RATE_WINDOW]:
                 del Handler._rate[k]
             hits = [t for t in Handler._rate.get(key, []) if now - t < self.RATE_WINDOW]
-            if len(hits) >= self.RATE_LIMIT:
+            if len(hits) >= (limit or self.RATE_LIMIT):
                 Handler._rate[key] = hits
                 return True
             hits.append(now)
@@ -800,7 +802,9 @@ class Handler(BaseHTTPRequestHandler):
         self._redirect("/", extra=[("Set-Cookie", cookie)])
 
     def _handle_invite_accept(self, token):
-        if self._rate_limited("invite"):
+        # a team link is meant to be used by a whole team, often behind one
+        # office NAT, so this bucket is looser than register's
+        if self._rate_limited("invite", limit=self.INVITE_RATE_LIMIT):
             self._json({"error": "too many attempts; try again later"}, 429)
             return
         form = self._read_form()
@@ -815,7 +819,8 @@ class Handler(BaseHTTPRequestHandler):
                 email = self.auth.accept_team_invite(
                     token, form.get("email", ""), password)
         except ValueError as e:
-            self._redirect(f"/invite/{token}?err=" + quote(str(e)))
+            self._redirect(f"/invite/{token}?err=" + quote(str(e))
+                           + "&email=" + quote(form.get("email", "")[:120]))
             return
         session = self.auth.login(email, password)
         cookie = (f"hotusage_session={session}; HttpOnly; SameSite=Lax; Path=/; "
@@ -982,18 +987,22 @@ class Handler(BaseHTTPRequestHandler):
                 inv = self.auth.get_invite(token)
                 if inv:  # single-use: the address is fixed by the inviter
                     self._page("invite.html", {"TOKEN": token, "EMAIL": inv["email"],
+                                               "FIXED": "1", "HINT": "",
                                                "ORG": inv["org_name"] or inv["org_slug"],
-                                               "HINT": "", "ERROR": err[:200]})
+                                               "ERROR": err[:200]})
                     return
                 team = self.auth.get_team_invite(token)
                 if team:  # reusable link: the joiner types their own address
                     hint = (f"Use your @{team['domain']} email address."
                             if team["domain"] else "")
-                    self._page("invite.html", {"TOKEN": token, "EMAIL": "",
+                    typed = parse_qs(parsed.query).get("email", [""])[0][:120]
+                    self._page("invite.html", {"TOKEN": token, "EMAIL": typed,
+                                               "FIXED": "", "HINT": hint,
                                                "ORG": team["org_name"] or team["org_slug"],
-                                               "HINT": hint, "ERROR": err[:200]})
+                                               "ERROR": err[:200]})
                     return
-                self._page("invite.html", {"TOKEN": "", "EMAIL": "", "ORG": "", "HINT": "",
+                self._page("invite.html", {"TOKEN": "", "EMAIL": "", "ORG": "",
+                                           "FIXED": "", "HINT": "",
                                            "ERROR": "This invite is invalid, expired, "
                                                     "or fully used."})
                 return
@@ -1173,7 +1182,10 @@ def user_admin_cli(argv):
             rows = auth.sysdb.rows(f"SELECT token FROM {SYS}.public.{table} "
                                    f"WHERE token = {sql_str(a.target)}")
             if rows:
-                auth.sysdb.load(table, [{"token": a.target}], "delete")
+                if table == "team_invites":
+                    auth.revoke_team_invite(a.target)
+                else:
+                    auth.sysdb.load(table, [{"token": a.target}], "delete")
                 print(f"revoked {label} {a.target}")
                 break
         else:
