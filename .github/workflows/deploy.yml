@@ -1,0 +1,62 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  GHCR_IMAGE: ghcr.io/hotdata-dev/hotusage
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write # OIDC for the labs ECR mirror
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t "$GHCR_IMAGE:${{ github.sha }}" .
+
+      - name: Smoke test (healthz)
+        run: |
+          docker run -d --name hotusage -p 8377:8377 "$GHCR_IMAGE:${{ github.sha }}"
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:8377/healthz && exit 0
+            sleep 1
+          done
+          docker logs hotusage
+          exit 1
+
+      - name: Push to GHCR
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "$GHCR_IMAGE:${{ github.sha }}" "$GHCR_IMAGE:latest"
+          docker push "$GHCR_IMAGE:${{ github.sha }}"
+          docker push "$GHCR_IMAGE:latest"
+
+      # Mirror into the labs ECR repo App Runner pulls from (App Runner cannot
+      # pull private GHCR). Inert until the AWS_LABS_ECR_ROLE_ARN and
+      # AWS_LABS_ECR_REPO repo variables are set (created by the
+      # aws-hotdata-labs Terraform; see its hotusage_* outputs).
+      - name: Configure AWS credentials (labs OIDC)
+        if: github.ref == 'refs/heads/main' && vars.AWS_LABS_ECR_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_LABS_ECR_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Mirror to labs ECR
+        if: github.ref == 'refs/heads/main' && vars.AWS_LABS_ECR_ROLE_ARN != ''
+        run: |
+          aws ecr get-login-password --region us-west-2 \
+            | docker login --username AWS --password-stdin "${{ vars.AWS_LABS_ECR_REPO }}"
+          docker tag "$GHCR_IMAGE:${{ github.sha }}" "${{ vars.AWS_LABS_ECR_REPO }}:${{ github.sha }}"
+          docker tag "$GHCR_IMAGE:${{ github.sha }}" "${{ vars.AWS_LABS_ECR_REPO }}:latest"
+          docker push "${{ vars.AWS_LABS_ECR_REPO }}:${{ github.sha }}"
+          docker push "${{ vars.AWS_LABS_ECR_REPO }}:latest"
