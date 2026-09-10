@@ -171,3 +171,5 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .modal-close { background: transparent; border: 0; color: var(--muted); font: inherit;
                font-size: 12.5px; cursor: pointer; padding: 2px 0; }
 .modal-close:hover { color: var(--ink); }
+.modal-or { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
+#teamMaxUses { max-width: 110px; }

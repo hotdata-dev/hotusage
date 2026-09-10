@@ -13,10 +13,13 @@
       <h1>hotusage</h1>
       <div class="sub" id="sub">Join {{ORG}}</div>
       <div class="err" id="err">{{ERROR}}</div>
+      <div class="hint" id="hint">{{HINT}}</div>
       <form method="post" action="/invite/{{TOKEN}}" id="form">
         <div class="field">
           <label for="email">Email</label>
-          <input id="email" type="email" value="{{EMAIL}}" disabled>
+          <!-- single-use invites fix the address (disabled below); reusable
+               team links leave it empty for the joiner to fill in -->
+          <input id="email" name="email" type="email" value="{{EMAIL}}" required>
         </div>
         <div class="field">
           <label for="password">Choose a password</label>
@@ -31,6 +34,12 @@
   <script>
     var err = document.getElementById('err');
     if (err.textContent.trim()) err.classList.add('show');
+    var hint = document.getElementById('hint');
+    if (hint.textContent.trim()) hint.classList.add('show');
+    // a pre-filled address means a single-use invite bound to it: the server
+    // ignores anything else posted, so don't let it be edited
+    var email = document.getElementById('email');
+    if (email.value) email.readOnly = true; else email.focus();
     // no token = invalid/expired invite: hide the form, keep the message
     if (!"{{TOKEN}}") {
       document.getElementById('form').style.display = 'none';

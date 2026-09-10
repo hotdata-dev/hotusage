@@ -97,10 +97,19 @@ TABLES = {
                  ("invited_by", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
                  ("expires_at", "DOUBLE")],
     },
+    # Reusable team links, kept in their own table so the single-use `invites`
+    # schema is untouched. `domain` (may be empty) restricts who can join;
+    # `max_uses` 0 means unlimited.
+    "team_invites": {
+        "key": ["token"],
+        "cols": [("token", "VARCHAR"), ("org_slug", "VARCHAR"), ("domain", "VARCHAR"),
+                 ("invited_by", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
+                 ("expires_at", "DOUBLE"), ("max_uses", "BIGINT"), ("uses", "BIGINT")],
+    },
 }
 
 USAGE_TABLES = ("sessions", "requests", "daily_usage")
-SYSTEM_TABLES = ("orgs", "users", "auth_sessions", "invites")
+SYSTEM_TABLES = ("orgs", "users", "auth_sessions", "invites", "team_invites")
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +355,10 @@ class AuthStore:
                                   f"WHERE expires_at < {time.time()}")
             if inv:
                 self.sysdb.load("invites", inv, "delete")
+            team = self.sysdb.rows(f"SELECT token FROM {SYS}.public.team_invites "
+                                   f"WHERE expires_at < {time.time()}")
+            if team:
+                self.sysdb.load("team_invites", team, "delete")
         except Exception as e:
             print(f"warn: session purge: {e}", file=sys.stderr)
 
@@ -443,6 +456,83 @@ class AuthStore:
         self.create_user(inv["email"], password, inv["org_slug"])
         self.sysdb.load("invites", [{"token": token}], "delete")
         return inv["email"]
+
+    # --- reusable team links -------------------------------------------------
+    TEAM_INVITE_TTL = 30 * 24 * 3600
+    MAX_TEAM_INVITE_TTL = 90 * 24 * 3600
+
+    def create_team_invite(self, org_slug, invited_by, domain="",
+                           max_uses=0, expires_days=None):
+        """A link several people can use. `domain` (optional) restricts joiners
+        to that email domain; `max_uses` 0 means unlimited. Returns the token."""
+        domain = (domain or "").strip().lower().lstrip("@")
+        if domain and not re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)+$", domain):
+            raise ValueError("that does not look like an email domain")
+        try:
+            max_uses = max(0, int(max_uses or 0))
+        except (TypeError, ValueError):
+            raise ValueError("max uses must be a whole number")
+        ttl = self.TEAM_INVITE_TTL
+        if expires_days:
+            try:
+                ttl = int(expires_days) * 86400
+            except (TypeError, ValueError):
+                raise ValueError("expiry must be a whole number of days")
+            ttl = max(86400, min(ttl, self.MAX_TEAM_INVITE_TTL))
+        token = secrets.token_urlsafe(32)
+        self.sysdb.load("team_invites", [{
+            "token": token, "org_slug": org_slug, "domain": domain,
+            "invited_by": invited_by,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": time.time() + ttl,
+            "max_uses": max_uses, "uses": 0,
+        }], "upsert")
+        return token
+
+    def get_team_invite(self, token):
+        if not token or not re.match(r"^[A-Za-z0-9_-]{20,64}$", token):
+            return None
+        rows = self.sysdb.rows(
+            f"SELECT t.token, t.org_slug, t.domain, t.invited_by, t.created_at, "
+            f"t.expires_at, t.max_uses, t.uses, o.name AS org_name "
+            f"FROM {SYS}.public.team_invites t "
+            f"LEFT JOIN {SYS}.public.orgs o ON o.slug = t.org_slug "
+            f"WHERE t.token = {sql_str(token)}")
+        if not rows or float(rows[0]["expires_at"]) < time.time():
+            return None
+        inv = rows[0]
+        if inv["org_name"] is None:  # org deleted since the link was minted
+            return None
+        if inv["max_uses"] and int(inv["uses"]) >= int(inv["max_uses"]):
+            return None
+        return inv
+
+    def accept_team_invite(self, token, email, password):
+        """Join `token`'s org as `email`. The link stays usable until it expires
+        or hits max_uses."""
+        inv = self.get_team_invite(token)
+        if not inv:
+            raise ValueError("this invite link is invalid, expired, or fully used")
+        email = (email or "").strip().lower()
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            raise ValueError("that does not look like an email address")
+        if inv["domain"] and email.rsplit("@", 1)[1] != inv["domain"]:
+            raise ValueError(f"this link only accepts @{inv['domain']} addresses")
+        if self.get_user(email):
+            raise ValueError("that email is already registered")
+        self.create_user(email, password, inv["org_slug"])
+        # Best-effort use counter: concurrent joins can read the same value and
+        # let a link go a use or two past max_uses. The domain restriction is
+        # the real control; tighten this if the cap ever needs to be exact.
+        self.sysdb.load("team_invites", [{**{k: inv[k] for k in
+                                             ("token", "org_slug", "domain", "invited_by",
+                                              "expires_at", "max_uses")},
+                                          "created_at": str(inv["created_at"]),
+                                          "uses": int(inv["uses"]) + 1}], "upsert")
+        return email
+
+    def revoke_team_invite(self, token):
+        self.sysdb.load("team_invites", [{"token": token}], "delete")
 
     def seed(self):
         """First boot: system tables; org hotdata (with its dedicated database)
@@ -718,7 +808,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if len(password) < 8:
                 raise ValueError("password must be at least 8 characters")
-            email = self.auth.accept_invite(token, password)
+            if self.auth.get_invite(token):
+                email = self.auth.accept_invite(token, password)
+            else:
+                # reusable team link: the joiner supplies their own address
+                email = self.auth.accept_team_invite(
+                    token, form.get("email", ""), password)
         except ValueError as e:
             self._redirect(f"/invite/{token}?err=" + quote(str(e)))
             return
@@ -751,11 +846,25 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 length = int(self.headers.get("Content-Length", 0))
                 payload = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
-                token = self.auth.create_invite(
-                    payload.get("email", ""), viewer["org_slug"], viewer["email"])
                 host = self.headers.get("X-Forwarded-Host", self.headers.get("Host", ""))
                 proto = self.headers.get("X-Forwarded-Proto", "https")
-                self._json({"ok": True,
+                if payload.get("kind") == "team":
+                    token = self.auth.create_team_invite(
+                        viewer["org_slug"], viewer["email"],
+                        domain=payload.get("domain", ""),
+                        max_uses=payload.get("max_uses", 0),
+                        expires_days=payload.get("expires_days"))
+                    inv = self.auth.get_team_invite(token)
+                    self._json({"ok": True, "kind": "team",
+                                "link": f"{proto}://{host}/invite/{token}",
+                                "domain": inv["domain"],
+                                "max_uses": int(inv["max_uses"]),
+                                "expires_days": round(
+                                    (float(inv["expires_at"]) - time.time()) / 86400)})
+                    return
+                token = self.auth.create_invite(
+                    payload.get("email", ""), viewer["org_slug"], viewer["email"])
+                self._json({"ok": True, "kind": "single",
                             "link": f"{proto}://{host}/invite/{token}",
                             "expires_days": AuthStore.INVITE_TTL // 86400})
             except ValueError as e:
@@ -869,15 +978,24 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/invite/"):
                 token = path.rsplit("/", 1)[1]
-                inv = self.auth.get_invite(token)
-                if not inv:
-                    self._page("invite.html", {"TOKEN": "", "EMAIL": "", "ORG": "",
-                                               "ERROR": "This invite is invalid or has expired."})
-                    return
                 err = parse_qs(parsed.query).get("err", [""])[0]
-                self._page("invite.html", {"TOKEN": token, "EMAIL": inv["email"],
-                                           "ORG": inv["org_name"] or inv["org_slug"],
-                                           "ERROR": err[:200]})
+                inv = self.auth.get_invite(token)
+                if inv:  # single-use: the address is fixed by the inviter
+                    self._page("invite.html", {"TOKEN": token, "EMAIL": inv["email"],
+                                               "ORG": inv["org_name"] or inv["org_slug"],
+                                               "HINT": "", "ERROR": err[:200]})
+                    return
+                team = self.auth.get_team_invite(token)
+                if team:  # reusable link: the joiner types their own address
+                    hint = (f"Use your @{team['domain']} email address."
+                            if team["domain"] else "")
+                    self._page("invite.html", {"TOKEN": token, "EMAIL": "",
+                                               "ORG": team["org_name"] or team["org_slug"],
+                                               "HINT": hint, "ERROR": err[:200]})
+                    return
+                self._page("invite.html", {"TOKEN": "", "EMAIL": "", "ORG": "", "HINT": "",
+                                           "ERROR": "This invite is invalid, expired, "
+                                                    "or fully used."})
                 return
             if path.startswith("/static/"):
                 self._static(path[len("/static/"):])
@@ -944,7 +1062,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 ADMIN_VERBS = ("adduser", "addorg", "resetpw", "deluser", "delorg",
-               "listusers", "listorgs")
+               "listusers", "listorgs", "listinvites", "revokeinvite")
 
 def user_admin_cli(argv):
     """Admin subcommands against the system database; returns True if handled."""
@@ -952,7 +1070,7 @@ def user_admin_cli(argv):
         return False
     verb = argv[0]
     ap = argparse.ArgumentParser(prog=f"server.py {verb}")
-    if verb not in ("listusers", "listorgs"):
+    if verb not in ("listusers", "listorgs", "listinvites"):
         ap.add_argument("target", help="email (user verbs) or org slug (org verbs)")
     ap.add_argument("--org", default="hotdata",
                     help="org slug for adduser / filter for listusers (default hotdata)")
@@ -1027,6 +1145,39 @@ def user_admin_cli(argv):
             print(f"{u['email']:<36} org={u['org_slug']}  since {str(u['created_at'])[:10]}")
         if not users:
             print(f"no users (org filter: {a.org}; use --org all for everyone)")
+
+    elif verb == "listinvites":
+        single = auth.sysdb.rows(
+            f"SELECT token, email, org_slug, expires_at FROM {SYS}.public.invites "
+            f"ORDER BY expires_at")
+        team = auth.sysdb.rows(
+            f"SELECT token, org_slug, domain, max_uses, uses, expires_at "
+            f"FROM {SYS}.public.team_invites ORDER BY expires_at")
+        for i in single:
+            left = (float(i["expires_at"]) - time.time()) / 86400
+            print(f"single  {i['token']}  {i['email']}  org={i['org_slug']}  "
+                  f"{left:.1f}d left")
+        for t in team:
+            left = (float(t["expires_at"]) - time.time()) / 86400
+            cap = f"{t['uses']}/{t['max_uses']}" if t["max_uses"] else f"{t['uses']}/unlimited"
+            dom = f"@{t['domain']}" if t["domain"] else "any domain"
+            print(f"team    {t['token']}  {dom}  org={t['org_slug']}  used {cap}  "
+                  f"{left:.1f}d left")
+        if not single and not team:
+            print("no outstanding invites")
+
+    elif verb == "revokeinvite":
+        # match the raw rows, so an exhausted or expired link (which the live
+        # getters correctly hide) can still be cleaned out of the table
+        for table, label in (("invites", "single-use invite"), ("team_invites", "team link")):
+            rows = auth.sysdb.rows(f"SELECT token FROM {SYS}.public.{table} "
+                                   f"WHERE token = {sql_str(a.target)}")
+            if rows:
+                auth.sysdb.load(table, [{"token": a.target}], "delete")
+                print(f"revoked {label} {a.target}")
+                break
+        else:
+            sys.exit("no such invite")
     return True
 
 
