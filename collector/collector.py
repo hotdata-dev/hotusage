@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 
@@ -134,6 +135,15 @@ class Collector:
     def sync(self):
         """Parse local history, send changed sessions. Returns a status string."""
         with self.lock:
+            # Refuse to ship local session metadata to a remote server without
+            # a token (loopback dev servers exempt) - mirrors the Rust guard.
+            # Exact hostname match: "localhost.example.net" must not qualify.
+            host = (urllib.parse.urlsplit(self.config["server_url"]).hostname or "").lower()
+            loopback = host in ("127.0.0.1", "localhost", "::1")
+            if not (self.config.get("token") or "").strip() and not loopback:
+                self.last_result = f"not configured: set 'token' in {CONFIG_PATH}"
+                self.last_time = datetime.now()
+                return self.last_result
             try:
                 built = self.scanner.scan()
                 state = load_state()
@@ -232,7 +242,8 @@ def main():
     if "--once" in sys.argv:
         print(f"hotusage collector: {config['user_email']} -> {config['server_url']}")
         print("hotusage collector:", collector.sync())
-        sys.exit(0 if not collector.last_result.startswith(("failed", "server error")) else 1)
+        ok = not collector.last_result.startswith(("failed", "server error", "not configured"))
+        sys.exit(0 if ok else 1)
     run_menu_bar(collector)
 
 
