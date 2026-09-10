@@ -118,11 +118,12 @@ class HotdataClient:
             ))
         return self._client
 
-    def sql(self, query):
+    def sql(self, query, timeout=None):
         import hotdata
         client = self.client()
         resp = hotdata.QueryApi(client).query(
-            hotdata.QueryRequest(sql=query), x_database_id=self.db)
+            hotdata.QueryRequest(sql=query), x_database_id=self.db,
+            _request_timeout=timeout)
         cols, rows = resp.columns, list(resp.rows)
         if resp.truncated and resp.result_id:
             results = hotdata.ResultsApi(client)
@@ -614,6 +615,39 @@ class Handler(BaseHTTPRequestHandler):
             print(f"error: /ingest: {e}", file=sys.stderr)
             self._json({"error": str(e)[:500]}, 500)
 
+    # /healthz is public and unrated, and each deep probe costs one upstream
+    # call, so the result is cached: many probes, at most one call per window.
+    _health_cache = (0.0, None)
+    _health_ttl = 30
+
+    def _hotdata_health(self):
+        """Coarse backend status for /healthz?deep=1 - never leaks details."""
+        ts, cached = Handler._health_cache
+        if cached and time.time() - ts < Handler._health_ttl:
+            return cached
+        status = self._probe_hotdata()
+        Handler._health_cache = (time.time(), status)
+        return status
+
+    def _probe_hotdata(self):
+        if not core.hotdata_api_key():
+            return "no_api_key"
+        try:
+            # no table is named, so nothing here can be legitimately "missing"
+            self.auth.sysdb.sql("SELECT 1 AS ok", timeout=8)
+            return "ok"
+        except Exception as e:
+            msg = str(e).lower()
+            if "401" in msg or "unauthorized" in msg or "forbidden" in msg or "403" in msg:
+                return "auth_rejected"
+            if "not found" in msg or "404" in msg:
+                # the query names no table: a not-found means hotdata rejected
+                # the database id or the workspace, which is a real failure
+                return "db_not_found"
+            if "timed out" in msg or "timeout" in msg or "connection" in msg:
+                return "unreachable"
+            return "error"
+
     def _org_payload(self, viewer, fresh=False):
         """The dashboard payload: the viewer's org database, whole."""
         if not viewer.get("database_id"):
@@ -632,8 +666,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             # public routes
             if path == "/healthz":
-                # liveness only (no hotdata round-trip): App Runner polls this
-                self._json({"ok": True})
+                # liveness only (no hotdata round-trip): App Runner polls this.
+                # ?deep=1 additionally reports whether the hotdata backend is
+                # usable, classified rather than echoed, so a deployment can be
+                # diagnosed without shell or log access. No secret or raw error
+                # text is ever returned.
+                if parse_qs(parsed.query).get("deep", ["0"])[0] == "1":
+                    self._json({"ok": True, "hotdata": self._hotdata_health()})
+                else:
+                    self._json({"ok": True})
                 return
             if path == "/login":
                 self._static("login.html")
