@@ -631,6 +631,10 @@ class Handler(BaseHTTPRequestHandler):
         fresh = parse_qs(parsed.query).get("fresh", ["0"])[0] == "1"
         try:
             # public routes
+            if path == "/healthz":
+                # liveness only (no hotdata round-trip): App Runner polls this
+                self._json({"ok": True})
+                return
             if path == "/login":
                 self._static("login.html")
                 return
