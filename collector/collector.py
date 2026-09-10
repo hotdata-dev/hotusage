@@ -30,7 +30,7 @@ CONFIG_PATH = os.path.join(core.CONFIG_DIR, "collector.json")
 STATE_PATH = os.path.join(core.CONFIG_DIR, "collector-state.json")
 
 DEFAULT_CONFIG = {
-    "server_url": "http://127.0.0.1:8377",
+    "server_url": "https://hotusage.ai",
     "token": "",
     "user_email": "",
     "interval_minutes": 15,
