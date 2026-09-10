@@ -38,7 +38,8 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+import html
+from urllib.parse import urlparse, parse_qs, quote
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import core  # noqa: E402
@@ -341,6 +342,10 @@ class AuthStore:
                                    f"WHERE expires_at < {time.time()}")
             if rows:
                 self.sysdb.load("auth_sessions", rows, "delete")
+            inv = self.sysdb.rows(f"SELECT token FROM {SYS}.public.invites "
+                                  f"WHERE expires_at < {time.time()}")
+            if inv:
+                self.sysdb.load("invites", inv, "delete")
         except Exception as e:
             print(f"warn: session purge: {e}", file=sys.stderr)
 
@@ -390,7 +395,14 @@ class AuthStore:
             raise ValueError(f"an organization with the slug '{slug}' already exists")
         if self.get_user(email):
             raise ValueError("that email is already registered")
-        self.ensure_org(slug, org_name)
+        db_id = self.ensure_org(slug, org_name)
+        # two concurrent registrations can both pass the get_org check and both
+        # provision a database; the orgs upsert on slug picks one winner. Only
+        # the registration whose database actually landed may proceed -- the
+        # loser must not add a stranger to the winner's org.
+        org = self.get_org(slug, ttl=0)
+        if not org or org["database_id"] != db_id:
+            raise ValueError(f"an organization with the slug '{slug}' already exists")
         self.create_user(email, password, slug)
 
     def create_invite(self, email, org_slug, invited_by):
@@ -418,6 +430,8 @@ class AuthStore:
             f"LEFT JOIN {SYS}.public.orgs o ON o.slug = i.org_slug "
             f"WHERE i.token = {sql_str(token)}")
         if not rows or float(rows[0]["expires_at"]) < time.time():
+            return None
+        if rows[0]["org_name"] is None:  # org deleted since the invite was minted
             return None
         return rows[0]
 
@@ -621,28 +635,35 @@ class Handler(BaseHTTPRequestHandler):
     # hotdata database). App Runner may run several instances, so the real
     # ceiling is limit x instances -- still enough to blunt abuse.
     _rate = {}
+    _rate_lock = threading.Lock()
     RATE_LIMIT, RATE_WINDOW = 5, 3600
 
     def _rate_limited(self, bucket):
-        ip = self.headers.get("X-Forwarded-For", self.client_address[0]).split(",")[0].strip()
+        # rightmost X-Forwarded-For entry: proxies (App Runner/ALB) append the
+        # real peer to a client-supplied header, so position 0 is spoofable.
+        fwd = self.headers.get("X-Forwarded-For", "")
+        ip = fwd.split(",")[-1].strip() if fwd.strip() else self.client_address[0]
         key = f"{bucket}:{ip}"
         now = time.time()
-        hits = [t for t in Handler._rate.get(key, []) if now - t < self.RATE_WINDOW]
-        if len(hits) >= self.RATE_LIMIT:
+        with Handler._rate_lock:
+            for k in [k for k, v in Handler._rate.items()
+                      if now - v[-1] >= self.RATE_WINDOW]:
+                del Handler._rate[k]
+            hits = [t for t in Handler._rate.get(key, []) if now - t < self.RATE_WINDOW]
+            if len(hits) >= self.RATE_LIMIT:
+                Handler._rate[key] = hits
+                return True
+            hits.append(now)
             Handler._rate[key] = hits
-            return True
-        hits.append(now)
-        Handler._rate[key] = hits
         return False
 
     def _page(self, name, subs=None):
         """Serve a static page with {{PLACEHOLDER}} substitution, HTML-escaped."""
-        import html as _html
         fp = os.path.join(STATIC_DIR, name)
         with open(fp, encoding="utf-8") as f:
             body = f.read()
         for k, v in (subs or {}).items():
-            body = body.replace("{{" + k + "}}", _html.escape(str(v)))
+            body = body.replace("{{" + k + "}}", html.escape(str(v)))
         self._send(200, body.encode(), "text/html; charset=utf-8")
 
     def _read_form(self):
@@ -681,7 +702,6 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("password must be at least 8 characters")
             self.auth.register_org(org_name, slug, email, password)
         except ValueError as e:
-            from urllib.parse import quote
             self._redirect("/register?err=" + quote(str(e)))
             return
         token = self.auth.login(email, password)
@@ -700,7 +720,6 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("password must be at least 8 characters")
             email = self.auth.accept_invite(token, password)
         except ValueError as e:
-            from urllib.parse import quote
             self._redirect(f"/invite/{token}?err=" + quote(str(e)))
             return
         session = self.auth.login(email, password)
