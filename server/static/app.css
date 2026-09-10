@@ -153,3 +153,21 @@ table.data tbody tr.sess:focus-visible td { background: var(--page); outline: no
 
 footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+
+/* ---- invite modal ---- */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 20;
+         display: flex; align-items: flex-start; justify-content: center; padding-top: 14vh; }
+.modal[hidden] { display: none; }
+.modal-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+              padding: 22px 24px; width: min(460px, 92vw); }
+.modal-card h2 { font-size: 16px; font-weight: 650; margin: 0 0 4px; }
+.modal-sub { color: var(--ink-2); font-size: 12.5px; margin: 0 0 14px; }
+.modal-row, .modal-result { display: flex; gap: 8px; margin-bottom: 10px; }
+.modal-row input, .modal-result input { flex: 1; background: var(--page); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px; }
+.modal-result input { font-variant-numeric: tabular-nums; }
+.modal-err { background: rgba(227,73,72,.12); border: 1px solid rgba(227,73,72,.4);
+             border-radius: 8px; padding: 7px 10px; font-size: 12.5px; margin-bottom: 10px; }
+.modal-close { background: transparent; border: 0; color: var(--muted); font: inherit;
+               font-size: 12.5px; cursor: pointer; padding: 2px 0; }
+.modal-close:hover { color: var(--ink); }

@@ -44,6 +44,19 @@ behind a VPN (e.g. tailscale) or reverse proxy.
 First boot seeds org `hotdata` with user `eddie@hotdata.dev` and prints a
 generated initial password once.
 
+## Self-serve registration and invites
+
+Anyone can create an organization at `/register` (linked from the login page):
+org name + email + password provisions the org's dedicated database and signs
+them in. Slugs are derived from the org name; a taken slug is refused —
+joining an existing org goes through invites, never through guessing its slug.
+
+Members grow an org with **Invite teammate** in the dashboard header: enter
+the teammate's email and get back a single-use link (valid 7 days, bound to
+that email). Nothing is emailed — send them the link yourself. Opening it,
+they choose a password and land in your org. Unauthenticated register/invite
+endpoints are rate limited (5/hour per IP).
+
 ## Managing organizations
 
 Every user belongs to exactly one organization. Each organization owns a
@@ -71,7 +84,8 @@ row. `delorg` keeps the database unless you pass `--delete-database`.
 .venv/bin/python server/server.py deluser jane@acme.com              # + revokes their logins
 ```
 
-Onboarding a teammate:
+Onboarding a teammate (the **Invite teammate** button in the dashboard is
+the usual path; the CLI equivalent is):
 
 1. `adduser jane@acme.com --org acme` — send them the printed initial
    password (they can ask you to `resetpw` any time; there is no self-serve

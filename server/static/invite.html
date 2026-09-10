@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hotusage - accept invite</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/auth.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>hotusage</h1>
+      <div class="sub" id="sub">Join {{ORG}}</div>
+      <div class="err" id="err">{{ERROR}}</div>
+      <form method="post" action="/invite/{{TOKEN}}" id="form">
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" type="email" value="{{EMAIL}}" disabled>
+        </div>
+        <div class="field">
+          <label for="password">Choose a password</label>
+          <input id="password" name="password" type="password" minlength="8"
+                 autocomplete="new-password" required autofocus>
+        </div>
+        <button class="signin" type="submit">Join {{ORG}}</button>
+      </form>
+      <div class="alt"><a href="/login">Sign in instead</a></div>
+    </div>
+  </div>
+  <script>
+    var err = document.getElementById('err');
+    if (err.textContent.trim()) err.classList.add('show');
+    // no token = invalid/expired invite: hide the form, keep the message
+    if (!"{{TOKEN}}") {
+      document.getElementById('form').style.display = 'none';
+      document.getElementById('sub').textContent = 'Invite';
+    }
+  </script>
+</body>
+</html>

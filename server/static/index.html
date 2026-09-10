@@ -13,6 +13,7 @@
       <span class="sub">AI coding-agent token &amp; context usage</span>
       <span class="spacer"></span>
       <span class="flabel" id="viewer"></span>
+      <button class="refresh" id="inviteBtn" type="button">Invite teammate</button>
       <a class="refresh" id="logout" href="/logout" style="text-decoration:none">Log out</a>
       <button class="refresh" id="refresh" type="button">Refresh</button>
     </header>
@@ -68,6 +69,24 @@
       no local token counts).
       Data: <span id="srcNote"></span>
     </footer>
+  </div>
+
+  <div id="inviteModal" class="modal" hidden>
+    <div class="modal-card">
+      <h2>Invite a teammate</h2>
+      <p class="modal-sub">They join your organization and their usage lands in its database.
+        Send them the link yourself - nothing is emailed.</p>
+      <div class="modal-row">
+        <input id="inviteEmail" type="email" placeholder="teammate@company.com">
+        <button class="refresh" id="inviteCreate" type="button">Create invite</button>
+      </div>
+      <div class="modal-result" id="inviteResult" hidden>
+        <input id="inviteLink" readonly>
+        <button class="refresh" id="inviteCopy" type="button">Copy</button>
+      </div>
+      <div class="modal-err" id="inviteErr" hidden></div>
+      <button class="modal-close" id="inviteClose" type="button">Close</button>
+    </div>
   </div>
 
   <div id="tooltip" role="status"></div>
