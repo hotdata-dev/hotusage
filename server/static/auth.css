@@ -18,3 +18,6 @@ button.signin { width: 100%; margin-top: 6px; background: var(--ink); color: var
 .err.show { display: block; }
 .alt { margin-top: 14px; color: var(--ink-2); font-size: 12.5px; text-align: center; }
 .alt a { color: var(--ink); }
+.hint { display: none; color: var(--ink-2); font-size: 12.5px; margin: -6px 0 12px; }
+.hint.show { display: block; }
+.field input[readonly] { color: var(--ink-2); background: var(--surface); }

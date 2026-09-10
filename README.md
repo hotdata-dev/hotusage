@@ -51,11 +51,28 @@ org name + email + password provisions the org's dedicated database and signs
 them in. Slugs are derived from the org name; a taken slug is refused —
 joining an existing org goes through invites, never through guessing its slug.
 
-Members grow an org with **Invite teammate** in the dashboard header: enter
-the teammate's email and get back a single-use link (valid 7 days, bound to
-that email). Nothing is emailed — send them the link yourself. Opening it,
-they choose a password and land in your org. Unauthenticated register/invite
-endpoints are rate limited (5/hour per IP).
+Members grow an org with **Invite teammate** in the dashboard header, which
+mints two kinds of link. Nothing is emailed yet — you share the link yourself.
+Unauthenticated register/invite endpoints are rate limited (5/hour per IP).
+
+- **Single-use invite** — enter one teammate's email; the link is bound to
+  that address and valid 7 days. It dies the moment it is used.
+- **Team link** — reusable: anyone who opens it picks their own email and
+  password and joins your org. Optionally restrict it to an email domain
+  (`acme.com`) and/or a maximum number of uses (blank/0 = unlimited);
+  default expiry is 30 days, 90 max. Restrict it to your domain unless you
+  are sharing it privately — anyone holding an unrestricted link can join
+  and read the org's usage.
+
+The use counter on a team link is best-effort: simultaneous joins can push it
+a use or two past the cap. The domain restriction is the real control.
+
+Outstanding links, and revoking one:
+
+```bash
+.venv/bin/python server/server.py listinvites          # both kinds, with uses + days left
+.venv/bin/python server/server.py revokeinvite <token> # kills it immediately
+```
 
 ## Managing organizations
 

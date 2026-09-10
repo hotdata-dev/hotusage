@@ -793,42 +793,68 @@ window.addEventListener('resize', () => {
 load();
 
 // ---------------------------------------------------------------------------
-// Invite teammate: create a single-use join link for the viewer's org.
+// Invite teammates: a single-use link bound to one address, or a reusable
+// team link (optionally restricted to an email domain / a number of uses).
 // ---------------------------------------------------------------------------
 (function () {
   const modal = $('#inviteModal');
   const err = $('#inviteErr');
   const result = $('#inviteResult');
+  const note = $('#inviteNote');
   const email = $('#inviteEmail');
   const link = $('#inviteLink');
-  $('#inviteBtn').addEventListener('click', () => {
-    err.hidden = true; result.hidden = true; email.value = '';
-    modal.hidden = false; email.focus();
-  });
-  $('#inviteClose').addEventListener('click', () => { modal.hidden = true; });
-  modal.addEventListener('click', (e) => { if (e.target === modal) modal.hidden = true; });
-  $('#inviteCreate').addEventListener('click', async () => {
-    err.hidden = true; result.hidden = true;
+  const domain = $('#teamDomain');
+  const maxUses = $('#teamMaxUses');
+
+  function reset() {
+    err.hidden = true; result.hidden = true; note.hidden = true;
+  }
+
+  async function create(payload) {
+    reset();
     try {
       const r = await fetch('/api/invite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.value.trim() }),
+        body: JSON.stringify(payload),
       });
       if (r.status === 401) { location.href = '/login'; return; }
       const body = await r.json();
       if (!r.ok) throw new Error(body.error || r.statusText);
       link.value = body.link;
       result.hidden = false;
+      if (body.kind === 'team') {
+        const bits = [body.domain ? `@${body.domain} addresses only` : 'any email address',
+                      body.max_uses ? `${body.max_uses} uses` : 'unlimited uses',
+                      `expires in ${body.expires_days} days`];
+        note.textContent = 'Reusable link: ' + bits.join(', ') + '.';
+      } else {
+        note.textContent = `Single use, bound to that address, expires in ${body.expires_days} days.`;
+      }
+      note.hidden = false;
       link.select();
     } catch (e) {
       err.textContent = e.message || 'invite failed';
       err.hidden = false;
     }
+  }
+
+  $('#inviteBtn').addEventListener('click', () => {
+    reset(); email.value = ''; domain.value = ''; maxUses.value = '';
+    modal.hidden = false; email.focus();
   });
+  $('#inviteClose').addEventListener('click', () => { modal.hidden = true; });
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.hidden = true; });
+  $('#inviteCreate').addEventListener('click', () => create({ email: email.value.trim() }));
+  $('#teamCreate').addEventListener('click', () => create({
+    kind: 'team',
+    domain: domain.value.trim(),
+    max_uses: Number(maxUses.value) || 0,
+  }));
   $('#inviteCopy').addEventListener('click', () => {
     link.select();
     navigator.clipboard ? navigator.clipboard.writeText(link.value) : document.execCommand('copy');
   });
   email.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#inviteCreate').click(); });
+  domain.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#teamCreate').click(); });
 })();
