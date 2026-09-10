@@ -44,6 +44,37 @@ jobs:
       # pull private GHCR). Inert until the AWS_LABS_ECR_ROLE_ARN and
       # AWS_LABS_ECR_REPO repo variables are set (created by the
       # aws-hotdata-labs Terraform; see its hotusage_* outputs).
+      # Cross-account OIDC fails with one opaque STS message whether the role
+      # is missing or the trust policy does not match the token. Print the
+      # claims AWS is being asked to trust plus the raw STS error, so the fix
+      # is obvious from the log instead of a guess.
+      - name: Diagnose labs OIDC (on demand / before assume)
+        if: github.ref == 'refs/heads/main' && vars.AWS_LABS_ECR_ROLE_ARN != ''
+        continue-on-error: true
+        run: |
+          TOKEN=$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          python3 - "$TOKEN" <<'EOF'
+          import base64, json, sys
+          payload = sys.argv[1].split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          # claims only - never the token itself
+          print("OIDC iss:", claims.get("iss"))
+          print("OIDC aud:", claims.get("aud"))
+          print("OIDC sub:", claims.get("sub"))
+          EOF
+          echo "role-to-assume: ${{ vars.AWS_LABS_ECR_ROLE_ARN }}"
+          echo "--- raw sts:AssumeRoleWithWebIdentity error (if any) ---"
+          aws sts assume-role-with-web-identity \
+            --role-arn "${{ vars.AWS_LABS_ECR_ROLE_ARN }}" \
+            --role-session-name hotusage-ci-diag \
+            --web-identity-token "$TOKEN" \
+            --region us-west-2 --query 'AssumedRoleUser.Arn' --output text 2>&1 | tail -3
+          echo "If this says 'Not authorized': either the role does not exist yet"
+          echo "(aws-hotdata-labs apply has not created it) or its trust policy's"
+          echo "sub condition does not equal the OIDC sub printed above."
+
       - name: Configure AWS credentials (labs OIDC)
         if: github.ref == 'refs/heads/main' && vars.AWS_LABS_ECR_ROLE_ARN != ''
         uses: aws-actions/configure-aws-credentials@v4
