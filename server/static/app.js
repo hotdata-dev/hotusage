@@ -791,3 +791,44 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(render, 150);
 });
 load();
+
+// ---------------------------------------------------------------------------
+// Invite teammate: create a single-use join link for the viewer's org.
+// ---------------------------------------------------------------------------
+(function () {
+  const modal = $('#inviteModal');
+  const err = $('#inviteErr');
+  const result = $('#inviteResult');
+  const email = $('#inviteEmail');
+  const link = $('#inviteLink');
+  $('#inviteBtn').addEventListener('click', () => {
+    err.hidden = true; result.hidden = true; email.value = '';
+    modal.hidden = false; email.focus();
+  });
+  $('#inviteClose').addEventListener('click', () => { modal.hidden = true; });
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.hidden = true; });
+  $('#inviteCreate').addEventListener('click', async () => {
+    err.hidden = true; result.hidden = true;
+    try {
+      const r = await fetch('/api/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.value.trim() }),
+      });
+      if (r.status === 401) { location.href = '/login'; return; }
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || r.statusText);
+      link.value = body.link;
+      result.hidden = false;
+      link.select();
+    } catch (e) {
+      err.textContent = e.message || 'invite failed';
+      err.hidden = false;
+    }
+  });
+  $('#inviteCopy').addEventListener('click', () => {
+    link.select();
+    navigator.clipboard ? navigator.clipboard.writeText(link.value) : document.execCommand('copy');
+  });
+  email.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#inviteCreate').click(); });
+})();

@@ -38,7 +38,8 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+import html
+from urllib.parse import urlparse, parse_qs, quote
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import core  # noqa: E402
@@ -90,10 +91,16 @@ TABLES = {
         "key": ["token"],
         "cols": [("token", "VARCHAR"), ("user_email", "VARCHAR"), ("expires_at", "DOUBLE")],
     },
+    "invites": {
+        "key": ["token"],
+        "cols": [("token", "VARCHAR"), ("email", "VARCHAR"), ("org_slug", "VARCHAR"),
+                 ("invited_by", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
+                 ("expires_at", "DOUBLE")],
+    },
 }
 
 USAGE_TABLES = ("sessions", "requests", "daily_usage")
-SYSTEM_TABLES = ("orgs", "users", "auth_sessions")
+SYSTEM_TABLES = ("orgs", "users", "auth_sessions", "invites")
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +342,10 @@ class AuthStore:
                                    f"WHERE expires_at < {time.time()}")
             if rows:
                 self.sysdb.load("auth_sessions", rows, "delete")
+            inv = self.sysdb.rows(f"SELECT token FROM {SYS}.public.invites "
+                                  f"WHERE expires_at < {time.time()}")
+            if inv:
+                self.sysdb.load("invites", inv, "delete")
         except Exception as e:
             print(f"warn: session purge: {e}", file=sys.stderr)
 
@@ -373,6 +384,65 @@ class AuthStore:
         with self.lock:
             self.route_cache[email] = (route, time.time())
         return route
+
+    INVITE_TTL = 7 * 24 * 3600
+
+    def register_org(self, org_name, slug, email, password):
+        """Self-serve signup: a NEW org (provisioning its database) + its first
+        user. Refuses an existing slug -- joining an org goes through invites,
+        never through guessing its slug."""
+        if self.get_org(slug, ttl=0):
+            raise ValueError(f"an organization with the slug '{slug}' already exists")
+        if self.get_user(email):
+            raise ValueError("that email is already registered")
+        db_id = self.ensure_org(slug, org_name)
+        # two concurrent registrations can both pass the get_org check and both
+        # provision a database; the orgs upsert on slug picks one winner. Only
+        # the registration whose database actually landed may proceed -- the
+        # loser must not add a stranger to the winner's org.
+        org = self.get_org(slug, ttl=0)
+        if not org or org["database_id"] != db_id:
+            raise ValueError(f"an organization with the slug '{slug}' already exists")
+        self.create_user(email, password, slug)
+
+    def create_invite(self, email, org_slug, invited_by):
+        """Invite `email` into `org_slug`; returns the single-use token."""
+        email = email.strip().lower()
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            raise ValueError("that does not look like an email address")
+        if self.get_user(email):
+            raise ValueError("that email is already registered")
+        token = secrets.token_urlsafe(32)
+        self.sysdb.load("invites", [{
+            "token": token, "email": email, "org_slug": org_slug,
+            "invited_by": invited_by,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": time.time() + self.INVITE_TTL,
+        }], "upsert")
+        return token
+
+    def get_invite(self, token):
+        if not token or not re.match(r"^[A-Za-z0-9_-]{20,64}$", token):
+            return None
+        rows = self.sysdb.rows(
+            f"SELECT i.token, i.email, i.org_slug, i.invited_by, i.expires_at, "
+            f"o.name AS org_name FROM {SYS}.public.invites i "
+            f"LEFT JOIN {SYS}.public.orgs o ON o.slug = i.org_slug "
+            f"WHERE i.token = {sql_str(token)}")
+        if not rows or float(rows[0]["expires_at"]) < time.time():
+            return None
+        if rows[0]["org_name"] is None:  # org deleted since the invite was minted
+            return None
+        return rows[0]
+
+    def accept_invite(self, token, password):
+        """Consume the invite: create its user in its org. Returns the email."""
+        inv = self.get_invite(token)
+        if not inv:
+            raise ValueError("this invite is invalid or has expired")
+        self.create_user(inv["email"], password, inv["org_slug"])
+        self.sysdb.load("invites", [{"token": token}], "delete")
+        return inv["email"]
 
     def seed(self):
         """First boot: system tables; org hotdata (with its dedicated database)
@@ -560,6 +630,42 @@ class Handler(BaseHTTPRequestHandler):
     def _viewer(self):
         return self.auth.user_for_token(self._cookie_token())
 
+    # naive per-instance, per-IP limiter for the unauthenticated write paths
+    # (register + invite accept both create users; register also provisions a
+    # hotdata database). App Runner may run several instances, so the real
+    # ceiling is limit x instances -- still enough to blunt abuse.
+    _rate = {}
+    _rate_lock = threading.Lock()
+    RATE_LIMIT, RATE_WINDOW = 5, 3600
+
+    def _rate_limited(self, bucket):
+        # rightmost X-Forwarded-For entry: proxies (App Runner/ALB) append the
+        # real peer to a client-supplied header, so position 0 is spoofable.
+        fwd = self.headers.get("X-Forwarded-For", "")
+        ip = fwd.split(",")[-1].strip() if fwd.strip() else self.client_address[0]
+        key = f"{bucket}:{ip}"
+        now = time.time()
+        with Handler._rate_lock:
+            for k in [k for k, v in Handler._rate.items()
+                      if now - v[-1] >= self.RATE_WINDOW]:
+                del Handler._rate[k]
+            hits = [t for t in Handler._rate.get(key, []) if now - t < self.RATE_WINDOW]
+            if len(hits) >= self.RATE_LIMIT:
+                Handler._rate[key] = hits
+                return True
+            hits.append(now)
+            Handler._rate[key] = hits
+        return False
+
+    def _page(self, name, subs=None):
+        """Serve a static page with {{PLACEHOLDER}} substitution, HTML-escaped."""
+        fp = os.path.join(STATIC_DIR, name)
+        with open(fp, encoding="utf-8") as f:
+            body = f.read()
+        for k, v in (subs or {}).items():
+            body = body.replace("{{" + k + "}}", html.escape(str(v)))
+        self._send(200, body.encode(), "text/html; charset=utf-8")
+
     def _read_form(self):
         length = int(self.headers.get("Content-Length", 0))
         if length <= 0 or length > 64 * 1024:
@@ -578,8 +684,86 @@ class Handler(BaseHTTPRequestHandler):
                   f"Max-Age={SESSION_TTL}")
         self._redirect("/", extra=[("Set-Cookie", cookie)])
 
+    def _handle_register(self):
+        if self._rate_limited("register"):
+            self._redirect("/register?err=Too+many+attempts%3B+try+again+later")
+            return
+        form = self._read_form()
+        org_name = (form.get("org_name") or "").strip()[:60]
+        slug = re.sub(r"[^a-z0-9-]", "-", org_name.lower()).strip("-")[:40]
+        email = (form.get("email") or "").strip().lower()
+        password = form.get("password") or ""
+        try:
+            if len(org_name) < 2 or len(slug) < 2:
+                raise ValueError("organization name must be at least 2 characters")
+            if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+                raise ValueError("that does not look like an email address")
+            if len(password) < 8:
+                raise ValueError("password must be at least 8 characters")
+            self.auth.register_org(org_name, slug, email, password)
+        except ValueError as e:
+            self._redirect("/register?err=" + quote(str(e)))
+            return
+        token = self.auth.login(email, password)
+        cookie = (f"hotusage_session={token}; HttpOnly; SameSite=Lax; Path=/; "
+                  f"Max-Age={SESSION_TTL}")
+        self._redirect("/", extra=[("Set-Cookie", cookie)])
+
+    def _handle_invite_accept(self, token):
+        if self._rate_limited("invite"):
+            self._json({"error": "too many attempts; try again later"}, 429)
+            return
+        form = self._read_form()
+        password = form.get("password") or ""
+        try:
+            if len(password) < 8:
+                raise ValueError("password must be at least 8 characters")
+            email = self.auth.accept_invite(token, password)
+        except ValueError as e:
+            self._redirect(f"/invite/{token}?err=" + quote(str(e)))
+            return
+        session = self.auth.login(email, password)
+        cookie = (f"hotusage_session={session}; HttpOnly; SameSite=Lax; Path=/; "
+                  f"Max-Age={SESSION_TTL}")
+        self._redirect("/", extra=[("Set-Cookie", cookie)])
+
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/register":
+            try:
+                self._handle_register()
+            except Exception as e:
+                print(f"error: /register: {e}", file=sys.stderr)
+                self._json({"error": "registration failed"}, 500)
+            return
+        if path.startswith("/invite/"):
+            try:
+                self._handle_invite_accept(path.rsplit("/", 1)[1])
+            except Exception as e:
+                print(f"error: /invite: {e}", file=sys.stderr)
+                self._json({"error": "invite failed"}, 500)
+            return
+        if path == "/api/invite":
+            try:
+                viewer = self._viewer()
+                if not viewer:
+                    self._json({"error": "unauthorized"}, 401)
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                payload = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+                token = self.auth.create_invite(
+                    payload.get("email", ""), viewer["org_slug"], viewer["email"])
+                host = self.headers.get("X-Forwarded-Host", self.headers.get("Host", ""))
+                proto = self.headers.get("X-Forwarded-Proto", "https")
+                self._json({"ok": True,
+                            "link": f"{proto}://{host}/invite/{token}",
+                            "expires_days": AuthStore.INVITE_TTL // 86400})
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+            except Exception as e:
+                print(f"error: /api/invite: {e}", file=sys.stderr)
+                self._json({"error": str(e)[:300]}, 500)
+            return
         if path == "/login":
             try:
                 self._handle_login()
@@ -678,6 +862,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/login":
                 self._static("login.html")
+                return
+            if path == "/register":
+                err = parse_qs(parsed.query).get("err", [""])[0]
+                self._page("register.html", {"ERROR": err[:200]})
+                return
+            if path.startswith("/invite/"):
+                token = path.rsplit("/", 1)[1]
+                inv = self.auth.get_invite(token)
+                if not inv:
+                    self._page("invite.html", {"TOKEN": "", "EMAIL": "", "ORG": "",
+                                               "ERROR": "This invite is invalid or has expired."})
+                    return
+                err = parse_qs(parsed.query).get("err", [""])[0]
+                self._page("invite.html", {"TOKEN": token, "EMAIL": inv["email"],
+                                           "ORG": inv["org_name"] or inv["org_slug"],
+                                           "ERROR": err[:200]})
                 return
             if path.startswith("/static/"):
                 self._static(path[len("/static/"):])
