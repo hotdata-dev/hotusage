@@ -118,11 +118,12 @@ class HotdataClient:
             ))
         return self._client
 
-    def sql(self, query):
+    def sql(self, query, timeout=None):
         import hotdata
         client = self.client()
         resp = hotdata.QueryApi(client).query(
-            hotdata.QueryRequest(sql=query), x_database_id=self.db)
+            hotdata.QueryRequest(sql=query), x_database_id=self.db,
+            _request_timeout=timeout)
         cols, rows = resp.columns, list(resp.rows)
         if resp.truncated and resp.result_id:
             results = hotdata.ResultsApi(client)
@@ -614,19 +615,35 @@ class Handler(BaseHTTPRequestHandler):
             print(f"error: /ingest: {e}", file=sys.stderr)
             self._json({"error": str(e)[:500]}, 500)
 
+    # /healthz is public and unrated, and each deep probe costs one upstream
+    # call, so the result is cached: many probes, at most one call per window.
+    _health_cache = (0.0, None)
+    _health_ttl = 30
+
     def _hotdata_health(self):
         """Coarse backend status for /healthz?deep=1 - never leaks details."""
+        ts, cached = Handler._health_cache
+        if cached and time.time() - ts < Handler._health_ttl:
+            return cached
+        status = self._probe_hotdata()
+        Handler._health_cache = (time.time(), status)
+        return status
+
+    def _probe_hotdata(self):
         if not core.hotdata_api_key():
             return "no_api_key"
         try:
-            self.auth.sysdb.sql("SELECT 1 AS ok")
+            # no table is named, so nothing here can be legitimately "missing"
+            self.auth.sysdb.sql("SELECT 1 AS ok", timeout=8)
             return "ok"
         except Exception as e:
             msg = str(e).lower()
             if "401" in msg or "unauthorized" in msg or "forbidden" in msg or "403" in msg:
                 return "auth_rejected"
-            if "not found" in msg or "has no data" in msg:
-                return "ok"  # reachable; the probe table just isn't a table
+            if "not found" in msg or "404" in msg:
+                # the query names no table: a not-found means hotdata rejected
+                # the database id or the workspace, which is a real failure
+                return "db_not_found"
             if "timed out" in msg or "timeout" in msg or "connection" in msg:
                 return "unreachable"
             return "error"
