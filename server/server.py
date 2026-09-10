@@ -804,13 +804,30 @@ def main():
 
     Handler.pool = ClientPool()
     Handler.auth = AuthStore(Handler.pool.get(args.system_database), Handler.pool)
-    seeded_pw = Handler.auth.seed()
-    if seeded_pw:
-        print("=" * 62)
-        print("seeded org 'hotdata' with first user eddie@hotdata.dev")
-        print(f"initial password: {seeded_pw}")
-        print("(change it with: python3 server/server.py resetpw eddie@hotdata.dev)")
-        print("=" * 62)
+
+    # Seed must not block or crash boot: with hotdata cold/unreachable (or the
+    # key not yet configured) the server still serves /healthz and retries in
+    # the background; requests that need hotdata fail visibly until it's up.
+    def try_seed():
+        try:
+            seeded_pw = Handler.auth.seed()
+            if seeded_pw:
+                print("=" * 62)
+                print("seeded org 'hotdata' with first user eddie@hotdata.dev")
+                print(f"initial password: {seeded_pw}")
+                print("(change it with: python3 server/server.py resetpw eddie@hotdata.dev)")
+                print("=" * 62)
+            return True
+        except Exception as e:
+            print(f"warn: seed deferred (hotdata not reachable yet?): {str(e)[:300]}",
+                  file=sys.stderr)
+            return False
+
+    if not try_seed():
+        def seed_retry():
+            while not try_seed():
+                time.sleep(60)
+        threading.Thread(target=seed_retry, daemon=True, name="seed-retry").start()
     Handler.stores = StorePool(Handler.pool, args.ttl)
     Handler.token = os.environ.get("HOTUSAGE_INGEST_TOKEN", "")
     if not Handler.token:
