@@ -27,10 +27,12 @@ OPENCODE_DB = os.path.expanduser("~/.local/share/opencode/opencode.db")
 #                      org's dedicated usage database id
 #   per-org databases - sessions / requests / daily_usage (catalog `hotusage`),
 #                      provisioned automatically when an org is created
-SYSTEM_DATABASE_ID = "dbidb1z8yff7tldii1lnqxvmvxuzr9"
+SYSTEM_DATABASE_ID = "dbidn362d0ry6835of59b6zbio6u2w"
 SYSTEM_CATALOG = "hotusage_system"
-DATABASE_ID = "dbidtyer9mdtm2bne7zw49xkl0jat8"  # the hotdata org's usage db
-WORKSPACE_ID = "workm4lz2mp899l2i7h9lk9u84azg3"
+DATABASE_ID = "dbid4bldth2f88j78dxybqyinep75e"  # the hotdata org's usage db
+# hotusage lives in its own workspace ("hotusage.ai"), not Default Workspace:
+# the databases and the API key the server runs with belong to it.
+WORKSPACE_ID = "worky0x9no4fa4p3fmllm0x2m0lu93"
 CATALOG = "hotusage"
 HOTDATA_KEY_FILE = os.path.expanduser("~/.hotdata/hotdata.json")
 
