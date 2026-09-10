@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hotusage</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <h1>hotusage</h1>
+      <span class="sub">AI coding-agent token &amp; context usage</span>
+      <span class="spacer"></span>
+      <span class="flabel" id="viewer"></span>
+      <a class="refresh" id="logout" href="/logout" style="text-decoration:none">Log out</a>
+      <button class="refresh" id="refresh" type="button">Refresh</button>
+    </header>
+
+    <div class="filters" id="filters">
+      <span class="flabel">Tool</span>
+      <div class="seg" id="providerSeg" role="group" aria-label="Tool"></div>
+      <span class="flabel" id="userLabel">User</span>
+      <select class="project" id="userSel" aria-label="User"></select>
+      <span class="flabel">Range</span>
+      <div class="seg" id="rangeSeg" role="group" aria-label="Date range">
+        <button data-range="7" type="button">7d</button>
+        <button data-range="30" type="button">30d</button>
+        <button data-range="90" type="button">90d</button>
+        <button data-range="all" type="button" aria-pressed="true">All time</button>
+      </div>
+      <span class="flabel">Project</span>
+      <select class="project" id="projectSel" aria-label="Project"></select>
+      <span class="flabel">Metric</span>
+      <div class="seg" id="metricSeg" role="group" aria-label="Metric">
+        <button data-metric="tok" type="button" aria-pressed="true">Tokens</button>
+        <button data-metric="cost" type="button">Est. cost</button>
+      </div>
+    </div>
+
+    <div class="tiles" id="tiles"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2 id="dailyTitle">Daily usage</h2>
+        <div class="legend" id="dailyLegend"></div>
+        <span class="spacer"></span>
+        <div class="viewtoggle" id="dailyToggle"></div>
+      </div>
+      <div class="chartbox" id="dailyChart"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Sessions</h2>
+        <span class="spacer"></span>
+        <span class="flabel" id="sessCount"></span>
+      </div>
+      <div id="sessions"></div>
+    </div>
+
+    <footer class="foot">
+      Costs are estimates at provider API list prices (Anthropic: cache read 0.1x input,
+      cache writes 1.25x / 2x input; OpenAI: cached input ~10% of input) &mdash;
+      subscription plans do not bill per token.
+      Served from the hotdata <code>hotusage</code> database, fed by per-user hotusage
+      collectors (Claude Code, Codex, and OpenCode history; Cursor and Gemini CLI keep
+      no local token counts).
+      Data: <span id="srcNote"></span>
+    </footer>
+  </div>
+
+  <div id="tooltip" role="status"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

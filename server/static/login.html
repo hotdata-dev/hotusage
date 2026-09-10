@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hotusage - sign in</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .login-wrap { max-width: 360px; margin: 14vh auto 0; padding: 0 20px; }
+    .login-card { background: var(--surface); border: 1px solid var(--border);
+                  border-radius: 12px; padding: 26px 26px 22px; }
+    .login-card h1 { font-size: 19px; font-weight: 650; margin: 0 0 2px; }
+    .login-card .sub { color: var(--ink-2); font-size: 13px; margin-bottom: 18px; }
+    .field { margin-bottom: 12px; }
+    .field label { display: block; color: var(--ink-2); font-size: 12.5px; margin-bottom: 4px; }
+    .field input { width: 100%; box-sizing: border-box; background: var(--page);
+                   color: var(--ink); border: 1px solid var(--border); border-radius: 8px;
+                   padding: 9px 11px; font: inherit; }
+    .field input:focus { outline: 2px solid var(--s-out); outline-offset: -1px; }
+    button.signin { width: 100%; margin-top: 6px; background: var(--ink); color: var(--surface);
+                    border: 0; border-radius: 8px; padding: 10px; font: inherit;
+                    font-weight: 600; cursor: pointer; }
+    .err { display: none; background: rgba(227, 73, 72, 0.12); color: var(--ink);
+           border: 1px solid rgba(227, 73, 72, 0.4); border-radius: 8px;
+           padding: 8px 11px; font-size: 12.5px; margin-bottom: 12px; }
+    .err.show { display: block; }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>hotusage</h1>
+      <div class="sub">AI coding-agent token &amp; context usage</div>
+      <div class="err" id="err">Wrong email or password.</div>
+      <form method="post" action="/login">
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button class="signin" type="submit">Sign in</button>
+      </form>
+    </div>
+  </div>
+  <script>
+    if (new URLSearchParams(location.search).get('err')) {
+      document.getElementById('err').classList.add('show');
+    }
+  </script>
+</body>
+</html>
