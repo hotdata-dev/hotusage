@@ -955,13 +955,15 @@ class HotdataStore:
                 f"SELECT cwd FROM {core.CATALOG}.public.sessions "
                 f"WHERE session_id = '{session_id}' LIMIT 1")
             return rows[0]["cwd"] if rows else ""
-        detail = self._cached("detail:" + session_id, fetch)
-        if not detail:
-            return None
         # cwd is a long string on every row and is only ever shown here, so it
-        # rides with the expansion rather than with the whole list
-        return {"id": session_id, "detail": detail,
-                "cwd": self._cached("cwd:" + session_id, fetch_cwd)}
+        # rides with the expansion rather than with the whole list. It also
+        # decides whether the session exists at all: a session with no request
+        # rows yet is real, just not chartable.
+        cwd = self._cached("cwd:" + session_id, fetch_cwd)
+        if not cwd:
+            return None
+        return {"id": session_id, "detail": self._cached("detail:" + session_id, fetch),
+                "cwd": cwd}
 
 
 class StorePool:
@@ -1449,16 +1451,24 @@ class Handler(BaseHTTPRequestHandler):
                 return "unreachable"
             return "error"
 
-    @staticmethod
-    def _window_days(query):
-        """`?days=N` bounds the first load; absent or 'all' means everything."""
+    # Only the windows the dashboard offers. Each distinct value pins a
+    # payload and a row list in caches that never evict, so an arbitrary
+    # integer here is a memory-exhaustion lever for any signed-in member.
+    WINDOWS = (7, 30, 90)
+
+    @classmethod
+    def _window_days(cls, query):
+        """`?days=N` bounds the first load; anything else means everything."""
         raw = (parse_qs(query).get("days", [""])[0] or "").strip().lower()
         if not raw or raw == "all":
             return None
         try:
-            return max(1, min(int(raw), 3650))
+            want = int(raw)
         except ValueError:
             return None
+        # snap up to the nearest offered window; wider than the largest is
+        # simply "everything", which is what the All time view asks for
+        return next((w for w in cls.WINDOWS if w >= want), None)
 
     def _org_payload(self, viewer, fresh=False, days=None):
         """The dashboard payload: the viewer's org database, whole."""

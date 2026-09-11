@@ -779,9 +779,12 @@ function renderSkeleton() {
   }
 }
 
+let loadSeq = 0;
+
 async function load(fresh, days) {
   renderSkeleton();
   const want = days === undefined ? state.range : days;
+  const seq = ++loadSeq;
   const boxes = document.querySelectorAll('.chartbox');
   boxes.forEach((b) => b.classList.add('loading'));
   try {
@@ -793,6 +796,7 @@ async function load(fresh, days) {
     if (r.status === 401) { location.href = '/login'; return; }
     const body = await r.json();
     if (!r.ok) throw new Error(body.error || r.statusText);
+    if (seq !== loadSeq) return;  // a later request already answered
     state.data = body;
     state.loadedDays = body.windowDays || Infinity;
     if (body.viewer && window.setViewer) {
@@ -809,6 +813,7 @@ async function load(fresh, days) {
     if (m) state.expanded = m[1];
     render();
   } catch (e) {
+    if (seq !== loadSeq) return;  // superseded; the newer load owns the UI
     // clear every skeleton, not just the list: render() bails while
     // state.data is null, so the shimmer would run forever under the error
     $('#tiles').replaceChildren();
@@ -818,7 +823,7 @@ async function load(fresh, days) {
       text: 'Failed to load data from hotdata: ' + (e && e.message ? e.message : 'is the server running?'),
     }));
   } finally {
-    boxes.forEach((b) => b.classList.remove('loading'));
+    if (seq === loadSeq) boxes.forEach((b) => b.classList.remove('loading'));
   }
 }
 
