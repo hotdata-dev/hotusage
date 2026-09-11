@@ -1,0 +1,34 @@
+/* Organization admin page: tables of members, invites and collectors. */
+.notice { background: var(--surface); border: 1px solid var(--border);
+          border-radius: 10px; padding: 10px 13px; font-size: 12.5px;
+          color: var(--ink-2); margin-bottom: 14px; }
+.orgrow { display: flex; gap: 8px; align-items: center; padding: 4px 0 10px; }
+.orgrow label { color: var(--ink-2); font-size: 12.5px; }
+.orgrow input { flex: 1; max-width: 320px; }
+.meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.admintable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.admintable th { text-align: left; font-weight: 600; color: var(--ink-2);
+                 font-size: 12px; padding: 6px 10px; }
+.admintable td { padding: 8px 10px; border-top: 1px solid var(--border);
+                 color: var(--ink); vertical-align: middle; }
+.admintable tr.head th { border-bottom: 1px solid var(--border); }
+
+.rowactions { display: flex; gap: 10px; justify-content: flex-end; }
+.linkbtn { background: none; border: 0; padding: 0; font: inherit; font-size: 12.5px;
+           color: var(--ink-2); cursor: pointer; }
+.linkbtn:hover { color: var(--ink); text-decoration: underline; }
+.linkbtn.danger:hover { color: var(--s-in); }
+
+.cardfoot { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+            border-top: 1px solid var(--border); margin-top: 10px; padding-top: 12px; }
+.cardfoot .sep { flex: 1; }
+.cardfoot input, .orgrow input, .linkout input {
+  background: var(--page); color: var(--ink); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px; }
+.cardfoot #teamMaxUses { max-width: 110px; }
+.linkout { display: flex; gap: 8px; margin-top: 10px; }
+.linkout input { flex: 1; font-variant-numeric: tabular-nums; }
+
+/* display rules above beat the hidden attribute unless it is spelled out */
+.cardfoot[hidden], .linkout[hidden], .orgrow[hidden] { display: none; }

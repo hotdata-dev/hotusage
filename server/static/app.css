@@ -173,3 +173,26 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .modal-close:hover { color: var(--ink); }
 .modal-or { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
 #teamMaxUses { max-width: 110px; }
+
+/* ---- shared header nav ---- */
+.brand { text-decoration: none; color: inherit; margin-right: 4px; }
+.navlinks { display: flex; gap: 2px; }
+.navlink { color: var(--ink-2); text-decoration: none; font-size: 13px;
+           padding: 5px 10px; border-radius: 7px; }
+.navlink:hover { color: var(--ink); background: var(--surface); }
+.navlink.current { color: var(--ink); background: var(--surface);
+                   border: 1px solid var(--border); padding: 4px 9px; }
+.accountwrap { position: relative; }
+.account { display: flex; align-items: center; gap: 6px; background: var(--surface);
+           color: var(--ink); border: 1px solid var(--border); border-radius: 8px;
+           padding: 5px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+.account .caret { color: var(--muted); font-size: 11px; }
+.menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+        min-width: 200px; background: var(--surface); border: 1px solid var(--border);
+        border-radius: 10px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+.menu[hidden] { display: none; }
+.menu-email { color: var(--muted); font-size: 12px; padding: 6px 8px 8px; }
+.menu-sep { height: 1px; background: var(--border); margin: 0 4px 6px; }
+.menu-item { display: block; color: var(--ink); text-decoration: none; font-size: 13px;
+             padding: 7px 8px; border-radius: 7px; }
+.menu-item:hover { background: var(--page); }

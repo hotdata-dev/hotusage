@@ -74,6 +74,21 @@ Outstanding links, and revoking one:
 .venv/bin/python server/server.py revokeinvite <token> # kills it immediately
 ```
 
+## Organization page
+
+`/admin` (linked from the header) is the self-serve version of the admin CLI:
+rename the org, see every member, invite people, and revoke invites or
+signed-in collectors. Whoever creates an organization administers it; admins
+can promote or demote anyone, and the last admin cannot be demoted or removed.
+
+Ordinary members see the roster but no invite tokens and no management
+controls — the server enforces this, not the page. From the CLI:
+
+```bash
+.venv/bin/python server/server.py makeadmin jane@acme.com
+.venv/bin/python server/server.py unadmin jane@acme.com
+```
+
 ## Managing organizations
 
 Every user belongs to exactly one organization. Each organization owns a

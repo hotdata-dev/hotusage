@@ -6,17 +6,9 @@
   <title>hotusage</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body data-page="dashboard">
   <div class="wrap">
-    <header class="top">
-      <h1>hotusage</h1>
-      <span class="sub">AI coding-agent token &amp; context usage</span>
-      <span class="spacer"></span>
-      <span class="flabel" id="viewer"></span>
-      <button class="refresh" id="inviteBtn" type="button">Invite teammate</button>
-      <a class="refresh" id="logout" href="/logout" style="text-decoration:none">Log out</a>
-      <button class="refresh" id="refresh" type="button">Refresh</button>
-    </header>
+    <header class="top"></header>
 
     <div class="filters" id="filters">
       <span class="flabel">Tool</span>
@@ -71,34 +63,8 @@
     </footer>
   </div>
 
-  <div id="inviteModal" class="modal" hidden>
-    <div class="modal-card">
-      <h2>Invite a teammate</h2>
-      <p class="modal-sub">They join your organization and their usage lands in its database.
-        Send them the link yourself - nothing is emailed.</p>
-      <div class="modal-row">
-        <input id="inviteEmail" type="email" placeholder="teammate@company.com">
-        <button class="refresh" id="inviteCreate" type="button">Create invite</button>
-      </div>
-      <p class="modal-sub modal-or">Or create a link several people can use.
-        Anyone who opens it joins your organization, so restrict it to your
-        email domain unless you are sharing it privately.</p>
-      <div class="modal-row">
-        <input id="teamDomain" type="text" placeholder="Domain, e.g. acme.com (optional)">
-        <input id="teamMaxUses" type="number" min="0" step="1" placeholder="Max uses">
-        <button class="refresh" id="teamCreate" type="button">Create team link</button>
-      </div>
-      <div class="modal-result" id="inviteResult" hidden>
-        <input id="inviteLink" readonly>
-        <button class="refresh" id="inviteCopy" type="button">Copy</button>
-      </div>
-      <div class="modal-sub" id="inviteNote" hidden></div>
-      <div class="modal-err" id="inviteErr" hidden></div>
-      <button class="modal-close" id="inviteClose" type="button">Close</button>
-    </div>
-  </div>
-
   <div id="tooltip" role="status"></div>
+  <script src="/static/nav.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
