@@ -36,6 +36,7 @@ import sys
 import tempfile
 import threading
 import gzip
+from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -282,6 +283,24 @@ class ClientPool:
             if database_id not in self.clients:
                 self.clients[database_id] = HotdataClient(database_id)
             return self.clients[database_id]
+
+
+def gather(tasks=None, **thunks):
+    """Run independent zero-arg lookups at once and return {name: result}.
+
+    Takes a dict, keyword thunks, or both -- a dict keyed by org slug cannot
+    be splatted as keywords, since a slug may contain a hyphen.
+
+    Every system-table read is a separate round trip to the hotdata API
+    (~120 ms each), so a handler that needs a dozen of them spends seconds
+    waiting in series. They do not depend on each other, so overlap them.
+    An exception in any thunk propagates, as it would have in series."""
+    work = {**(tasks or {}), **thunks}
+    if not work:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(len(work), 8)) as pool:
+        futures = {name: pool.submit(fn) for name, fn in work.items()}
+        return {name: f.result() for name, f in futures.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -614,7 +633,9 @@ class AuthStore:
     def all_orgs(self):
         orgs = self.sysdb.rows(f"SELECT slug, name, database_id, created_at "
                                f"FROM {SYS}.public.orgs ORDER BY created_at")
-        return [{**o, "members": len(self._member_rows(o["slug"]))} for o in orgs]
+        counts = gather({o["slug"]: (lambda slug=o["slug"]: len(self._member_rows(slug)))
+                         for o in orgs})
+        return [{**o, "members": counts[o["slug"]]} for o in orgs]
 
     def create_org(self, name):
         """Platform-side org creation: provision the database, no first user.
@@ -675,22 +696,24 @@ class AuthStore:
         org_memberships exist only in users, and the lazy backfill writes one
         row per user on their own read -- so neither table alone is the org's
         roster until every member has loaded a page."""
-        merged = {}
-        for r in self.sysdb.rows(
+        both = gather(
+            active=lambda: self.sysdb.rows(
                 f"SELECT email, created_at FROM {SYS}.public.users "
-                f"WHERE org_slug = {sql_str(org_slug)}"):
-            merged[r["email"]] = r
-        for r in self.sysdb.rows(
+                f"WHERE org_slug = {sql_str(org_slug)}"),
+            joined=lambda: self.sysdb.rows(
                 f"SELECT email, created_at FROM {SYS}.public.org_memberships "
-                f"WHERE org_slug = {sql_str(org_slug)}"):
+                f"WHERE org_slug = {sql_str(org_slug)}"))
+        merged = {r["email"]: r for r in both["active"]}
+        for r in both["joined"]:
             merged.setdefault(r["email"], r)
         return sorted(merged.values(), key=lambda r: (str(r["created_at"]), r["email"]))
 
     def members(self, org_slug):
         """Everyone who belongs to the org (active there or not)."""
-        admins = self.admins(org_slug)
-        return [{**r, "is_admin": r["email"] in admins}
-                for r in self._member_rows(org_slug)]
+        got = gather(admins=lambda: self.admins(org_slug),
+                     rows=lambda: self._member_rows(org_slug))
+        return [{**r, "is_admin": r["email"] in got["admins"]}
+                for r in got["rows"]]
 
     def remove_from_org(self, email, org_slug):
         """Remove one membership. The account (logins, collectors) survives
@@ -774,14 +797,17 @@ class AuthStore:
         self.revoke_collector_token(token)
 
     def org_invites(self, org_slug):
-        single = [{**r, "kind": "single"} for r in self.sysdb.rows(
-            f"SELECT token, email, expires_at FROM {SYS}.public.invites "
-            f"WHERE org_slug = {sql_str(org_slug)}")]
-        team = [{**r, "kind": "team"} for r in self.sysdb.rows(
-            f"SELECT token, domain, max_uses, uses, expires_at "
-            f"FROM {SYS}.public.team_invites WHERE org_slug = {sql_str(org_slug)}")]
+        both = gather(
+            single=lambda: self.sysdb.rows(
+                f"SELECT token, email, expires_at FROM {SYS}.public.invites "
+                f"WHERE org_slug = {sql_str(org_slug)}"),
+            team=lambda: self.sysdb.rows(
+                f"SELECT token, domain, max_uses, uses, expires_at "
+                f"FROM {SYS}.public.team_invites WHERE org_slug = {sql_str(org_slug)}"))
+        invites = [{**r, "kind": "single"} for r in both["single"]] + \
+                  [{**r, "kind": "team"} for r in both["team"]]
         now = time.time()
-        return [i for i in single + team if float(i["expires_at"]) > now]
+        return [i for i in invites if float(i["expires_at"]) > now]
 
     def org_collectors(self, org_slug):
         # ACTIVE members only: a collector routes ingest to its owner's active
@@ -1855,27 +1881,33 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._json(self._org_payload(viewer, fresh=fresh, days=days))
             elif path == "/api/admin/state":
-                org = viewer["org_slug"]
-                is_admin = self.auth.is_admin(viewer["email"], org)
+                org, email = viewer["org_slug"], viewer["email"]
+                # the privileged reads stay behind the role checks, so this is
+                # two waves rather than one: what the viewer may see first,
+                # then the reads that answer depends on it
+                who = gather(is_admin=lambda: self.auth.is_admin(email, org),
+                             is_sysadmin=lambda: self.auth.is_system_admin(email),
+                             members=lambda: self.auth.members(org))
                 payload = {
-                    "viewer": {"email": viewer["email"], "isAdmin": is_admin},
+                    "viewer": {"email": email, "isAdmin": who["is_admin"]},
                     "org": {"slug": org, "name": viewer["org_name"],
                             "database": viewer.get("database_id")},
-                    "members": self.auth.members(org),
+                    "members": who["members"],
                 }
-                if is_admin:  # invite tokens are credentials: admins only
-                    payload["invites"] = self.auth.org_invites(org)
-                    payload["collectors"] = self.auth.org_collectors(org)
-                if self.auth.is_system_admin(viewer["email"]):
+                extra = {}
+                if who["is_admin"]:  # invite tokens are credentials: admins only
+                    extra["invites"] = lambda: self.auth.org_invites(org)
+                    extra["collectors"] = lambda: self.auth.org_collectors(org)
+                if who["is_sysadmin"]:
+                    extra["allOrgs"] = lambda: self.auth.all_orgs()
                     payload["viewer"]["isSystemAdmin"] = True
-                    payload["allOrgs"] = self.auth.all_orgs()
+                payload.update(gather(extra))
                 self._json(payload)
             elif path == "/api/orgs":
                 slugs = sorted(self.auth.memberships(viewer["email"]))
-                orgs = []
-                for slug in slugs:
-                    o = self.auth.get_org(slug)
-                    orgs.append({"slug": slug, "name": (o or {}).get("name") or slug})
+                found = gather({s: (lambda s=s: self.auth.get_org(s)) for s in slugs})
+                orgs = [{"slug": s, "name": (found[s] or {}).get("name") or s}
+                        for s in slugs]
                 self._json({"active": viewer["org_slug"], "orgs": orgs})
             elif path == "/api/status":
                 self._json({"ok": True, "org": viewer["org_slug"],
