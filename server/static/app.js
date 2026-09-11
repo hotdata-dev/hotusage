@@ -791,6 +791,10 @@ async function load(fresh) {
     if (m) state.expanded = m[1];
     render();
   } catch (e) {
+    // clear every skeleton, not just the list: render() bails while
+    // state.data is null, so the shimmer would run forever under the error
+    $('#tiles').replaceChildren();
+    $('#dailyChart').replaceChildren();
     $('#sessions').replaceChildren(el('div', {
       class: 'empty',
       text: 'Failed to load data from hotdata: ' + (e && e.message ? e.message : 'is the server running?'),
@@ -800,7 +804,6 @@ async function load(fresh) {
   }
 }
 
-renderSkeleton();
 wireSeg('rangeSeg', 'range', (v) => { state.range = v; });
 wireSeg('metricSeg', 'metric', (v) => { state.metric = v; });
 wireSeg('providerSeg', 'provider', (v) => { state.provider = v; populateProjects(); });

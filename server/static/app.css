@@ -210,7 +210,7 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 @media (prefers-reduced-motion: reduce) {
   .skel { animation: none; background: var(--page); }
 }
-.skel-label { height: 12px; width: 58%; margin-bottom: 10px; }
-.skel-value { height: 24px; width: 42%; }
+.skel-label { height: 18px; width: 58%; margin-bottom: 10px; }
+.skel-value { height: 38px; width: 42%; }
 .skel-chart { height: 268px; }
 .skel-row { height: 38px; margin: 6px 0; }
