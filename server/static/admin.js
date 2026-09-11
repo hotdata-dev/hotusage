@@ -73,7 +73,7 @@ function renderMembers() {
       controls.append(b);
       if (!self) {
         const r = action('Remove', true, () => {
-          if (!confirm(`Remove ${m.email}? Their logins and collectors are revoked.`)) return;
+          if (!confirm(`Remove ${m.email} from this organization? If this is their only organization, their account and collectors are removed too.`)) return;
           act(() => api('/api/admin/remove-user', { email: m.email }));
         });
         controls.append(r);

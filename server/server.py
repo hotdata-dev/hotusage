@@ -780,7 +780,12 @@ class AuthStore:
         return [i for i in single + team if float(i["expires_at"]) > now]
 
     def org_collectors(self, org_slug):
-        emails = [m["email"] for m in self.members(org_slug)]
+        # ACTIVE members only: a collector routes ingest to its owner's active
+        # org, so a member active elsewhere reports elsewhere -- listing their
+        # token here would expose a credential this org cannot even revoke
+        emails = [r["email"] for r in self.sysdb.rows(
+            f"SELECT email FROM {SYS}.public.users "
+            f"WHERE org_slug = {sql_str(org_slug)}")]
         if not emails:
             return []
         wanted = ", ".join(sql_str(e) for e in emails)
