@@ -88,6 +88,22 @@ controls — the server enforces this, not the page. From the CLI:
 .venv/bin/python server/server.py unadmin jane@acme.com
 ```
 
+## System admins (platform operators)
+
+Creating or deleting organizations provisions or strands hotdata databases,
+so it is a platform power, not an org power. System admins get an **All
+organizations** card on `/admin`: every org with member counts, a create form
+(optionally with an owner email — that mints a single-use invite whose
+acceptor, as the org's first member, becomes its admin), and delete for empty
+orgs (the database is kept; destroying data stays CLI-only). The first member of an
+empty org becomes its admin automatically; an org that loses its last admin
+is recovered with `makeadmin`, never by whoever joins next.
+
+```bash
+.venv/bin/python server/server.py makesysadmin eddie@hotdata.dev
+.venv/bin/python server/server.py unsysadmin jane@acme.com
+```
+
 ## Managing organizations
 
 Every user belongs to exactly one organization. Each organization owns a

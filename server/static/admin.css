@@ -32,3 +32,4 @@
 
 /* display rules above beat the hidden attribute unless it is spelled out */
 .cardfoot[hidden], .linkout[hidden], .orgrow[hidden] { display: none; }
+.card.sysonly[hidden] { display: none; }

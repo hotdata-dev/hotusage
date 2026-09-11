@@ -107,6 +107,13 @@ TABLES = {
                  ("invited_by", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
                  ("expires_at", "DOUBLE"), ("max_uses", "BIGINT"), ("uses", "BIGINT")],
     },
+    # Platform operators: may create and delete organizations from the UI.
+    # Distinct from org_admins, which is scoped to one org -- creating an org
+    # provisions a billable hotdata database, so it is not an org-level power.
+    "system_admins": {
+        "key": ["email"],
+        "cols": [("email", "VARCHAR"), ("granted_at", "TIMESTAMPTZ")],
+    },
     # Who may manage an org. Its own table rather than a column on `users`:
     # hotdata fixes a table's columns at first write, so adding one to a live
     # table is not possible. Absence of a row means "ordinary member".
@@ -148,7 +155,7 @@ TABLES = {
 USAGE_TABLES = ("sessions", "requests", "daily_usage")
 SYSTEM_TABLES = ("orgs", "users", "auth_sessions", "invites", "team_invites",
                  "device_codes", "collector_tokens", "collector_token_usage",
-                 "org_admins")
+                 "org_admins", "system_admins")
 
 
 # ---------------------------------------------------------------------------
@@ -344,10 +351,21 @@ class AuthStore:
         if self.get_user(email):
             raise ValueError(f"user {email} already exists")
         self.ensure_org(org_slug)
+        # only the FIRST member: an org that has members but lost its admin
+        # must not hand admin (and everyone's data) to whoever joins next --
+        # that recovery is an explicit makeadmin, not an accident
+        first_member = not self.sysdb.rows(
+            f"SELECT email FROM {SYS}.public.users "
+            f"WHERE org_slug = {sql_str(org_slug)} LIMIT 1")
         self.sysdb.load("users", [{"email": email, "password_hash": hash_password(password),
                                    "org_slug": org_slug,
                                    "created_at": datetime.now(timezone.utc).isoformat()}],
                         "upsert")
+        # an org someone can join but nobody can manage is a dead end, so the
+        # first member of an empty org (UI-created, or CLI addorg) becomes
+        # its admin
+        if first_member:
+            self.set_admin(email, org_slug)
         with self.lock:
             self.route_cache.pop(email, None)
 
@@ -501,6 +519,64 @@ class AuthStore:
         self.sysdb.load("invites", [{"token": token}], "delete")
         return inv["email"]
 
+    # --- platform operators --------------------------------------------------
+    def is_system_admin(self, email):
+        rows = self.sysdb.rows(f"SELECT email FROM {SYS}.public.system_admins "
+                               f"WHERE email = {sql_str(email.strip().lower())}")
+        return bool(rows)
+
+    def set_system_admin(self, email, on=True):
+        email = email.strip().lower()
+        if on:
+            self.sysdb.load("system_admins", [{
+                "email": email,
+                "granted_at": datetime.now(timezone.utc).isoformat()}], "upsert")
+        else:
+            self.sysdb.load("system_admins", [{"email": email}], "delete")
+
+    def all_orgs(self):
+        orgs = self.sysdb.rows(f"SELECT slug, name, database_id, created_at "
+                               f"FROM {SYS}.public.orgs ORDER BY created_at")
+        counts = {}
+        for r in self.sysdb.rows(f"SELECT org_slug, count(*) AS n "
+                                 f"FROM {SYS}.public.users GROUP BY org_slug"):
+            counts[r["org_slug"]] = int(r["n"])
+        return [{**o, "members": counts.get(o["slug"], 0)} for o in orgs]
+
+    def create_org(self, name):
+        """Platform-side org creation: provision the database, no first user.
+        Returns the slug. The first person to join becomes its admin."""
+        name = (name or "").strip()[:60]
+        slug = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")[:40]
+        if len(name) < 2 or len(slug) < 2:
+            raise ValueError("organization name must be at least 2 characters")
+        if self.get_org(slug, ttl=0):
+            raise ValueError(f"an organization with the slug '{slug}' already exists")
+        self.ensure_org(slug, name)
+        return slug
+
+    def delete_empty_org(self, slug):
+        """Remove an org with no members. Its database is kept (delorg
+        --delete-database is the CLI-only destructive path)."""
+        org = self.get_org(slug, ttl=0)
+        if not org:
+            raise ValueError("no such organization")
+        members = self.sysdb.rows(f"SELECT email FROM {SYS}.public.users "
+                                  f"WHERE org_slug = {sql_str(slug)} LIMIT 1")
+        if members:
+            raise ValueError("that organization still has members")
+        for table, col in (("org_admins", "org_slug"), ("invites", "org_slug"),
+                           ("team_invites", "org_slug")):
+            rows = self.sysdb.rows(f"SELECT * FROM {SYS}.public.{table} "
+                                   f"WHERE {col} = {sql_str(slug)}")
+            if rows:
+                key = TABLES[table]["key"]
+                self.sysdb.load(table, [{k: r[k] for k in key} for r in rows], "delete")
+        self.sysdb.load("orgs", [{"slug": slug}], "delete")
+        with self.lock:
+            self.org_cache.pop(slug, None)
+        return org.get("database_id")
+
     # --- who may manage the org ---------------------------------------------
     def is_admin(self, email, org_slug):
         rows = self.sysdb.rows(
@@ -553,6 +629,9 @@ class AuthStore:
         user = self.get_user(email)
         if user:
             self.set_admin(email, user["org_slug"], False)
+        # and the platform grant: otherwise whoever re-registers this address
+        # at the public /register endpoint inherits system admin
+        self.set_system_admin(email, False)
         self.sysdb.load("users", [{"email": email}], "delete")
         with self.lock:
             self.route_cache.pop(email, None)
@@ -841,6 +920,7 @@ class AuthStore:
         self.ensure_org("hotdata", "hotdata")
         self.create_user("eddie@hotdata.dev", password, "hotdata")
         self.set_admin("eddie@hotdata.dev", "hotdata")
+        self.set_system_admin("eddie@hotdata.dev")
         return password
 
 
@@ -1274,13 +1354,42 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": "unauthorized"}, 401)
                     return
                 org = viewer["org_slug"]
-                if not self.auth.is_admin(viewer["email"], org):
-                    self._json({"error": "only an organization admin can do that"}, 403)
-                    return
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
                 action = path[len("/api/admin/"):]
                 target = (body.get("email") or "").strip().lower()
+
+                # platform actions: gated on system admin, not org admin
+                if action in ("create-org", "delete-org"):
+                    if not self.auth.is_system_admin(viewer["email"]):
+                        self._json({"error": "only a system admin can manage organizations"}, 403)
+                        return
+                    if action == "create-org":
+                        owner = (body.get("owner_email") or "").strip().lower()
+                        if owner:  # refuse before the database exists
+                            if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", owner):
+                                raise ValueError("that does not look like an email address")
+                            if self.auth.get_user(owner):
+                                raise ValueError("that email is already registered")
+                        slug = self.auth.create_org(body.get("name", ""))
+                        out = {"ok": True, "slug": slug}
+                        if owner:
+                            # a single-use invite whose acceptor, being the
+                            # org's first member, becomes its admin
+                            token = self.auth.create_invite(owner, slug, viewer["email"])
+                            proto, host = self._public_origin()
+                            out["invite_link"] = f"{proto}://{host}/invite/{token}"
+                        self._json(out)
+                    else:
+                        if body.get("slug") == viewer["org_slug"]:
+                            raise ValueError("you cannot delete your own organization")
+                        db = self.auth.delete_empty_org(body.get("slug", ""))
+                        self._json({"ok": True, "database_kept": db})
+                    return
+
+                if not self.auth.is_admin(viewer["email"], org):
+                    self._json({"error": "only an organization admin can do that"}, 403)
+                    return
 
                 if action == "remove-user":
                     if target == viewer["email"]:
@@ -1608,6 +1717,9 @@ class Handler(BaseHTTPRequestHandler):
                 if is_admin:  # invite tokens are credentials: admins only
                     payload["invites"] = self.auth.org_invites(org)
                     payload["collectors"] = self.auth.org_collectors(org)
+                if self.auth.is_system_admin(viewer["email"]):
+                    payload["viewer"]["isSystemAdmin"] = True
+                    payload["allOrgs"] = self.auth.all_orgs()
                 self._json(payload)
             elif path == "/api/status":
                 self._json({"ok": True, "org": viewer["org_slug"],
@@ -1684,7 +1796,8 @@ class Handler(BaseHTTPRequestHandler):
 
 ADMIN_VERBS = ("adduser", "addorg", "resetpw", "deluser", "delorg",
                "listusers", "listorgs", "listinvites", "revokeinvite",
-               "listtokens", "revoketoken", "makeadmin", "unadmin")
+               "listtokens", "revoketoken", "makeadmin", "unadmin",
+               "makesysadmin", "unsysadmin")
 
 def drop_usage_rows(auth, rows):
     """Best-effort cleanup of usage stamps. The credential delete is what
@@ -1750,6 +1863,7 @@ def user_admin_cli(argv):
             drop_usage_rows(auth, toks)
         if user:
             auth.set_admin(email, user["org_slug"], False)
+        auth.set_system_admin(email, False)
         auth.sysdb.load("users", [{"email": email}], "delete")
         print(f"deleted {email} ({len(toks)} collector token(s) revoked; their "
               f"already-ingested usage stays in the org database)")
@@ -1815,6 +1929,14 @@ def user_admin_cli(argv):
                   f"{left:.1f}d left")
         if not single and not team:
             print("no outstanding invites")
+
+    elif verb in ("makesysadmin", "unsysadmin"):
+        user = auth.get_user(a.target)
+        if not user:
+            sys.exit(f"no such user: {a.target}")
+        auth.set_system_admin(user["email"], verb == "makesysadmin")
+        print(f"{user['email']} is {'now' if verb == 'makesysadmin' else 'no longer'} "
+              f"a system admin")
 
     elif verb in ("makeadmin", "unadmin"):
         user = auth.get_user(a.target)
