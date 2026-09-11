@@ -543,6 +543,10 @@ class AuthStore:
         first member of an empty org still becomes its admin. Emptiness is
         judged across BOTH tables: org_memberships is empty for orgs that
         predate it, and joining an established org must never grant admin."""
+        # backfill FIRST: for an account predating org_memberships this read
+        # writes their active org's row; adding the new membership before it
+        # would make the set non-empty and silently drop their original org
+        self.memberships(email)
         first_member = not self._member_rows(org_slug)
         self.ensure_org(org_slug)
         self.add_membership(email, org_slug)
