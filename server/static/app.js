@@ -811,6 +811,17 @@ async function load(fresh, days) {
     populateProjects();
     const m = location.hash.match(/^#s=([\w-]+)$/);
     if (m) state.expanded = m[1];
+    // a deep link can point at a session older than the loaded window;
+    // widen once rather than rendering with nothing expanded and no hint why
+    if (state.expanded && state.loadedDays !== Infinity &&
+        !state.data.sessions.some((x) => x.id === state.expanded)) {
+      state.range = 'all';
+      for (const b of document.querySelectorAll('#rangeSeg button')) {
+        b.setAttribute('aria-pressed', String(b.dataset.range === 'all'));
+      }
+      load(false, 'all');
+      return;
+    }
     render();
   } catch (e) {
     if (seq !== loadSeq) return;  // superseded; the newer load owns the UI

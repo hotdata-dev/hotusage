@@ -1024,7 +1024,7 @@ class Handler(BaseHTTPRequestHandler):
     def _accepts_gzip(self):
         return "gzip" in self.headers.get("Accept-Encoding", "").lower()
 
-    def _send(self, code, body, ctype, extra=None, gzipped=False):
+    def _send(self, code, body, ctype, extra=None, gzipped=False, cache=None):
         extra = list(extra or [])
         if gzipped:
             extra.append(("Content-Encoding", "gzip"))
@@ -1037,7 +1037,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        # no-store is the right default: API responses are private, per-viewer
+        # data. Static assets override it -- see _static.
+        self.send_header("Cache-Control", cache or "no-store")
         for k, v in (extra or []):
             self.send_header(k, v)
         self.end_headers()
@@ -1631,9 +1633,17 @@ class Handler(BaseHTTPRequestHandler):
             except BrokenPipeError:
                 pass
 
+    # Gzipped static assets, keyed by (path, mtime) so a deploy (new file,
+    # new mtime) invalidates naturally. Small and bounded: one entry per file
+    # in static/.
+    _static_cache = {}
+    _static_lock = threading.Lock()
+
     def _static(self, name):
         fp = os.path.normpath(os.path.join(STATIC_DIR, name))
-        if not fp.startswith(STATIC_DIR) or not os.path.isfile(fp):
+        # separator-suffixed: a bare prefix check would admit a sibling
+        # directory like static_other
+        if not fp.startswith(STATIC_DIR + os.sep) or not os.path.isfile(fp):
             self._send(404, b"not found", "text/plain")
             return
         ctype = {
@@ -1641,8 +1651,32 @@ class Handler(BaseHTTPRequestHandler):
             ".css": "text/css",
             ".js": "application/javascript",
         }.get(os.path.splitext(fp)[1], "application/octet-stream")
-        with open(fp, "rb") as f:
-            self._send(200, f.read(), ctype)
+        # Assets change only on deploy, and App Runner replaces the instance
+        # then, so a short public max-age is safe and spares every navigation
+        # a re-download (no-store also forced this server to re-gzip each
+        # request). HTML stays no-store: it is tiny and login-adjacent.
+        is_html = fp.endswith(".html")
+        cache = None if is_html else "public, max-age=300"
+        mtime = os.path.getmtime(fp)
+        key = (fp, mtime)
+        with Handler._static_lock:
+            hit = Handler._static_cache.get(key)
+        if hit is None:
+            with open(fp, "rb") as f:
+                raw = f.read()
+            hit = (raw, gzip.compress(raw, 6) if len(raw) >= self.GZIP_MIN else None)
+            with Handler._static_lock:
+                # drop stale mtimes for this path, then remember the new one
+                for k in [k for k in Handler._static_cache if k[0] == fp]:
+                    del Handler._static_cache[k]
+                Handler._static_cache[key] = hit
+        raw, gz = hit
+        if gz is not None and self._accepts_gzip():
+            self._send(200, gz, ctype, cache=cache, gzipped=True,
+                       extra=[("Vary", "Accept-Encoding")])
+        else:
+            self._send(200, raw, ctype, cache=cache,
+                       extra=[("Vary", "Accept-Encoding")])
 
     def log_message(self, fmt, *args):
         pass
