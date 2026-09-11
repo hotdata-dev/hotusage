@@ -37,7 +37,7 @@ import tempfile
 import threading
 import gzip
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import html
 from urllib.parse import urlparse, parse_qs, quote
@@ -886,19 +886,25 @@ class HotdataStore:
             self.cache[key] = (time.time(), val)
         return val
 
-    def data(self, fresh=False):
-        return self._cached("data", self._fetch_data, fresh)
+    def data(self, fresh=False, days=None):
+        key = f"data:{days or 'all'}"
+        return self._cached(key, lambda: self._fetch_data(days), fresh)
 
-    def _fetch_data(self):
-        sess_rows = self.hd.rows(f"SELECT * FROM {core.CATALOG}.public.sessions")
-        daily_rows = self.hd.rows(f"SELECT * FROM {core.CATALOG}.public.daily_usage")
+    def _fetch_data(self, days=None):
+        since = ""
+        if days:
+            cut = (datetime.now(timezone.utc) - timedelta(days=int(days))).date().isoformat()
+            since = f" WHERE ended_at >= DATE '{cut}'"
+        sess_rows = self.hd.rows(f"SELECT * FROM {core.CATALOG}.public.sessions{since}")
+        daily_since = f" WHERE day >= DATE '{cut}'" if days else ""
+        daily_rows = self.hd.rows(
+            f"SELECT * FROM {core.CATALOG}.public.daily_usage{daily_since}")
         sessions = [{
             "id": r["session_id"],
             "user": r.get("user_email"),
             "host": r.get("hostname"),
             "provider": r["provider"],
             "project": r["project"],
-            "cwd": r["cwd"],
             "title": r["title"],
             "start": r["started_at"],
             "end": r["ended_at"],
@@ -944,10 +950,18 @@ class HotdataStore:
                 f"WHERE session_id = '{session_id}' ORDER BY seq")
             return [{"t": r["ts"], "ctx": r["context_tokens"], "out": r["output_tokens"]}
                     for r in rows]
+        def fetch_cwd():
+            rows = self.hd.rows(
+                f"SELECT cwd FROM {core.CATALOG}.public.sessions "
+                f"WHERE session_id = '{session_id}' LIMIT 1")
+            return rows[0]["cwd"] if rows else ""
         detail = self._cached("detail:" + session_id, fetch)
         if not detail:
             return None
-        return {"id": session_id, "detail": detail}
+        # cwd is a long string on every row and is only ever shown here, so it
+        # rides with the expansion rather than with the whole list
+        return {"id": session_id, "detail": detail,
+                "cwd": self._cached("cwd:" + session_id, fetch_cwd)}
 
 
 class StorePool:
@@ -1435,15 +1449,26 @@ class Handler(BaseHTTPRequestHandler):
                 return "unreachable"
             return "error"
 
-    def _org_payload(self, viewer, fresh=False):
+    @staticmethod
+    def _window_days(query):
+        """`?days=N` bounds the first load; absent or 'all' means everything."""
+        raw = (parse_qs(query).get("days", [""])[0] or "").strip().lower()
+        if not raw or raw == "all":
+            return None
+        try:
+            return max(1, min(int(raw), 3650))
+        except ValueError:
+            return None
+
+    def _org_payload(self, viewer, fresh=False, days=None):
         """The dashboard payload: the viewer's org database, whole."""
         if not viewer.get("database_id"):
             return {"generatedAt": datetime.now(timezone.utc).isoformat(),
                     "source": "no org database",
                     "viewer": {"email": viewer["email"], "org": viewer["org_name"]},
                     "sessions": [], "daily": []}
-        data = self.stores.get(viewer["database_id"]).data(fresh=fresh)
-        return {**data,
+        data = self.stores.get(viewer["database_id"]).data(fresh=fresh, days=days)
+        return {**data, "windowDays": days,
                 "viewer": {"email": viewer["email"], "org": viewer["org_name"]}}
 
     def do_GET(self):
@@ -1550,13 +1575,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._static("index.html")
             elif path == "/api/data":
                 db = viewer.get("database_id")
+                days = self._window_days(parsed.query)
                 if db and self._accepts_gzip():
                     body = self.stores.get(db).encoded_payload(
-                        viewer["email"], lambda: self._org_payload(viewer, fresh=fresh),
+                        f"{viewer['email']}:{days or 'all'}",
+                        lambda: self._org_payload(viewer, fresh=fresh, days=days),
                         fresh=fresh)
                     self._send(200, body, "application/json", gzipped=True)
                 else:
-                    self._json(self._org_payload(viewer, fresh=fresh))
+                    self._json(self._org_payload(viewer, fresh=fresh, days=days))
             elif path == "/api/admin/state":
                 org = viewer["org_slug"]
                 is_admin = self.auth.is_admin(viewer["email"], org)

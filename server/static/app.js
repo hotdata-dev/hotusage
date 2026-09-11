@@ -18,13 +18,15 @@ const state = {
   provider: 'all',
   user: 'all',
   project: 'all',
-  range: 'all',
+  range: '30',        // the first load only fetches this window
+  loadedDays: 30,     // what the server has actually sent us so far
   metric: 'tok',
   sort: { key: 'end', dir: -1 },
   expanded: null,
   dailyView: 'chart',
   detailView: 'chart',
   detailCache: new Map(),
+  cwdCache: new Map(),   // cwd rides with the detail fetch, not the list
 };
 
 // ---------------------------------------------------------------------------
@@ -53,6 +55,12 @@ function svg(tag, attrs, ...children) {
   }
   for (const c of children) if (c != null) n.append(c);
   return n;
+}
+
+function metaTail(s) {
+  return `${timeShort(s.start)} to ${timeShort(s.end)} · ` +
+    `${fmtInt(s.requests)} requests · peak context ${fmtInt(s.peakCtx)} tokens · ` +
+    `est. ${fmtMoney(s.cost)}`;
 }
 
 function fmtTok(n) {
@@ -586,15 +594,15 @@ function buildDetailRow(s) {
     }));
   }
   head.append(toggleBox);
-  const meta = el('div', {
-    class: 'dmeta',
-    text: (s.user ? `${s.user}${s.host ? ' on ' + s.host : ''} · ` : '') +
-      `${s.cwd} · ${timeShort(s.start)} to ${timeShort(s.end)} · ` +
-      `${fmtInt(s.requests)} requests · peak context ${fmtInt(s.peakCtx)} tokens · est. ${fmtMoney(s.cost)}`,
-  });
+  const metaText = (cwd) => (s.user ? `${s.user}${s.host ? ' on ' + s.host : ''} · ` : '') +
+    (cwd ? `${cwd} · ` : '') + metaTail(s);
+  const meta = el('div', { class: 'dmeta', text: metaText('') });
   const box = el('div', { class: 'chartbox' });
   td.append(head, meta, box);
   td.addEventListener('click', (e) => e.stopPropagation());
+
+  const knownCwd = state.cwdCache.get(s.id);
+  if (knownCwd) meta.textContent = metaText(knownCwd);
 
   const cached = state.detailCache.get(s.id);
   const draw = (points) => {
@@ -613,6 +621,10 @@ function buildDetailRow(s) {
       })
       .then((d) => {
         state.detailCache.set(s.id, d.detail || []);
+        if (d.cwd) {
+          state.cwdCache.set(s.id, d.cwd);
+          meta.textContent = metaText(d.cwd);
+        }
         if (state.expanded === s.id) draw(d.detail || []);
       })
       .catch(() => box.replaceChildren(el('div', { class: 'empty', text: 'Failed to load session detail.' })));
@@ -767,16 +779,22 @@ function renderSkeleton() {
   }
 }
 
-async function load(fresh) {
+async function load(fresh, days) {
   renderSkeleton();
+  const want = days === undefined ? state.range : days;
   const boxes = document.querySelectorAll('.chartbox');
   boxes.forEach((b) => b.classList.add('loading'));
   try {
-    const r = await fetch('/api/data' + (fresh ? '?fresh=1' : ''));
+    const params = new URLSearchParams();
+    if (want && want !== 'all') params.set('days', String(want));
+    if (fresh) params.set('fresh', '1');
+    const q = params.toString();
+    const r = await fetch('/api/data' + (q ? '?' + q : ''));
     if (r.status === 401) { location.href = '/login'; return; }
     const body = await r.json();
     if (!r.ok) throw new Error(body.error || r.statusText);
     state.data = body;
+    state.loadedDays = body.windowDays || Infinity;
     if (body.viewer && window.setViewer) {
       window.setViewer(body.viewer.email, body.viewer.org);
     }
@@ -804,7 +822,11 @@ async function load(fresh) {
   }
 }
 
-wireSeg('rangeSeg', 'range', (v) => { state.range = v; });
+wireSeg('rangeSeg', 'range', (v) => {
+  state.range = v;
+  const want = v === 'all' ? Infinity : Number(v);
+  if (want > state.loadedDays) load(false, v);  // fetch the wider window
+});
 wireSeg('metricSeg', 'metric', (v) => { state.metric = v; });
 wireSeg('providerSeg', 'provider', (v) => { state.provider = v; populateProjects(); });
 $('#refresh').addEventListener('click', () => load(true));
