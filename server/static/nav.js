@@ -63,7 +63,9 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ slug: o.slug }),
           });
-          if (r.ok) location.href = '/';
+          if (r.ok) { location.href = '/'; return; }
+          const err = await r.json().catch(() => ({}));
+          e.target.textContent = err.error || 'could not switch';
         },
       }));
     }

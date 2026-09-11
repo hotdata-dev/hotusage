@@ -14,7 +14,8 @@
       <div class="sub" id="sub">Join {{ORG}}</div>
       <div class="err" id="err">{{ERROR}}</div>
       <div class="hint" id="hint">{{HINT}}</div>
-      <form method="post" action="/invite/{{TOKEN}}" id="form">
+      <form method="post" action="/invite/{{TOKEN}}" id="form"
+            data-mode="{{MODE}}" data-org="{{ORG}}" data-email="{{EMAIL}}">
         <div class="field">
           <label for="email">Email</label>
           <!-- single-use invites fix the address (disabled below); reusable
@@ -22,7 +23,7 @@
           <input id="email" name="email" type="email" value="{{EMAIL}}" required>
         </div>
         <div class="field" id="pwField">
-          <label for="password">Choose a password</label>
+          <label for="password" id="pwLabel">Choose a password</label>
           <input id="password" name="password" type="password" minlength="8"
                  autocomplete="new-password" required autofocus>
         </div>
@@ -39,25 +40,37 @@
     // a pre-filled address means a single-use invite bound to it: the server
     // ignores anything else posted, so don't let it be edited
     var email = document.getElementById('email');
-    if ("{{FIXED}}") email.readOnly = true; else email.focus();
+    if ("{{FIXED}}") { email.readOnly = true; } else {
+      email.focus();
+      // a team link may be opened by someone with an existing account, whose
+      // password field the server ignores; do not force them to invent one
+      var pw = document.getElementById('password');
+      pw.required = false;
+      pw.removeAttribute('minlength');
+      document.getElementById('pwLabel').textContent =
+        'Choose a password (leave blank if you already have an account)';
+    }
     // the invited address already has an account: joining adds a membership,
     // so no new password -- either a one-click join (signed in as them) or a
     // bounce through login first
-    var mode = "{{MODE}}";
+    var form = document.getElementById('form');
+    var mode = form.dataset.mode;
+    var orgName = form.dataset.org;
+    var invEmail = form.dataset.email;
     if (mode === 'join') {
       var pw = document.getElementById('pwField');
       pw.style.display = 'none';
       document.getElementById('password').required = false;
-      document.getElementById('joinBtn').textContent = 'Join {{ORG}} as {{EMAIL}}';
+      document.getElementById('joinBtn').textContent = 'Join ' + orgName + ' as ' + invEmail;
     } else if (mode === 'login') {
       document.getElementById('form').style.display = 'none';
       document.getElementById('sub').textContent =
-        'This invite adds {{EMAIL}}\u2019s existing account to {{ORG}}.';
+        'This invite adds ' + invEmail + '\u2019s existing account to ' + orgName + '.';
       var alt = document.querySelector('.alt');
       alt.innerHTML = '';
       var a = document.createElement('a');
       a.href = '/login?next=' + encodeURIComponent(location.pathname);
-      a.textContent = 'Sign in as {{EMAIL}} to join';
+      a.textContent = 'Sign in as ' + invEmail + ' to join';
       alt.appendChild(a);
     }
     // no token = invalid/expired invite: hide the form, keep the message

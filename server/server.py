@@ -362,9 +362,7 @@ class AuthStore:
         # only the FIRST member: an org that has members but lost its admin
         # must not hand admin (and everyone's data) to whoever joins next --
         # that recovery is an explicit makeadmin, not an accident
-        first_member = not self.sysdb.rows(
-            f"SELECT email FROM {SYS}.public.users "
-            f"WHERE org_slug = {sql_str(org_slug)} LIMIT 1")
+        first_member = not self._member_rows(org_slug)
         self.sysdb.load("users", [{"email": email, "password_hash": hash_password(password),
                                    "org_slug": org_slug,
                                    "created_at": datetime.now(timezone.utc).isoformat()}],
@@ -542,10 +540,10 @@ class AuthStore:
 
     def join_org(self, email, org_slug):
         """Add an existing account to another org and make it active. The
-        first member of an empty org still becomes its admin."""
-        first_member = not self.sysdb.rows(
-            f"SELECT email FROM {SYS}.public.org_memberships "
-            f"WHERE org_slug = {sql_str(org_slug)} LIMIT 1")
+        first member of an empty org still becomes its admin. Emptiness is
+        judged across BOTH tables: org_memberships is empty for orgs that
+        predate it, and joining an established org must never grant admin."""
+        first_member = not self._member_rows(org_slug)
         self.ensure_org(org_slug)
         self.add_membership(email, org_slug)
         if first_member:
@@ -612,11 +610,7 @@ class AuthStore:
     def all_orgs(self):
         orgs = self.sysdb.rows(f"SELECT slug, name, database_id, created_at "
                                f"FROM {SYS}.public.orgs ORDER BY created_at")
-        counts = {}
-        for r in self.sysdb.rows(f"SELECT org_slug, count(*) AS n "
-                                 f"FROM {SYS}.public.users GROUP BY org_slug"):
-            counts[r["org_slug"]] = int(r["n"])
-        return [{**o, "members": counts.get(o["slug"], 0)} for o in orgs]
+        return [{**o, "members": len(self._member_rows(o["slug"]))} for o in orgs]
 
     def create_org(self, name):
         """Platform-side org creation: provision the database, no first user.
@@ -636,14 +630,10 @@ class AuthStore:
         org = self.get_org(slug, ttl=0)
         if not org:
             raise ValueError("no such organization")
-        members = self.sysdb.rows(f"SELECT email FROM {SYS}.public.users "
-                                  f"WHERE org_slug = {sql_str(slug)} LIMIT 1")
-        held = self.sysdb.rows(f"SELECT email FROM {SYS}.public.org_memberships "
-                               f"WHERE org_slug = {sql_str(slug)} LIMIT 1")
-        if members or held:
+        if self._member_rows(slug):
             raise ValueError("that organization still has members")
         for table, col in (("org_admins", "org_slug"), ("invites", "org_slug"),
-                           ("team_invites", "org_slug")):
+                           ("team_invites", "org_slug"), ("org_memberships", "org_slug")):
             rows = self.sysdb.rows(f"SELECT * FROM {SYS}.public.{table} "
                                    f"WHERE {col} = {sql_str(slug)}")
             if rows:
@@ -676,17 +666,27 @@ class AuthStore:
             self.sysdb.load("org_admins",
                             [{"org_slug": org_slug, "email": email}], "delete")
 
+    def _member_rows(self, org_slug):
+        """Union of membership rows and active-org rows. Accounts predating
+        org_memberships exist only in users, and the lazy backfill writes one
+        row per user on their own read -- so neither table alone is the org's
+        roster until every member has loaded a page."""
+        merged = {}
+        for r in self.sysdb.rows(
+                f"SELECT email, created_at FROM {SYS}.public.users "
+                f"WHERE org_slug = {sql_str(org_slug)}"):
+            merged[r["email"]] = r
+        for r in self.sysdb.rows(
+                f"SELECT email, created_at FROM {SYS}.public.org_memberships "
+                f"WHERE org_slug = {sql_str(org_slug)}"):
+            merged.setdefault(r["email"], r)
+        return sorted(merged.values(), key=lambda r: (str(r["created_at"]), r["email"]))
+
     def members(self, org_slug):
         """Everyone who belongs to the org (active there or not)."""
-        rows = self.sysdb.rows(
-            f"SELECT email, created_at FROM {SYS}.public.org_memberships "
-            f"WHERE org_slug = {sql_str(org_slug)} ORDER BY created_at, email")
-        if not rows:  # orgs older than the membership table
-            rows = self.sysdb.rows(
-                f"SELECT email, created_at FROM {SYS}.public.users "
-                f"WHERE org_slug = {sql_str(org_slug)} ORDER BY created_at, email")
         admins = self.admins(org_slug)
-        return [{**r, "is_admin": r["email"] in admins} for r in rows]
+        return [{**r, "is_admin": r["email"] in admins}
+                for r in self._member_rows(org_slug)]
 
     def remove_user(self, email):
         """Delete a member: their logins, collector tokens and account. Their
@@ -2001,12 +2001,15 @@ def user_admin_cli(argv):
         org = auth.get_org(a.target, ttl=0)
         if not org:
             sys.exit(f"no such org: {a.target}")
-        members = auth.sysdb.rows(f"SELECT email FROM {SYS}.public.users "
-                                  f"WHERE org_slug = {sql_str(a.target)}")
+        members = auth._member_rows(a.target)
         if members:
-            sys.exit(f"org '{a.target}' still has {len(members)} user(s): "
+            sys.exit(f"org '{a.target}' still has {len(members)} member(s): "
                      + ", ".join(m["email"] for m in members)
                      + "\ndelete them first (server.py deluser <email>)")
+        held = auth.sysdb.rows(f"SELECT email, org_slug FROM {SYS}.public.org_memberships "
+                               f"WHERE org_slug = {sql_str(a.target)}")
+        if held:
+            auth.sysdb.load("org_memberships", held, "delete")
         grants = auth.sysdb.rows(f"SELECT org_slug, email FROM {SYS}.public.org_admins "
                                  f"WHERE org_slug = {sql_str(a.target)}")
         if grants:
