@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hotusage - approve collector</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/auth.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>hotusage</h1>
+      <div class="sub" id="sub">Approve a collector</div>
+      <div class="err" id="err">{{ERROR}}</div>
+
+      <div id="confirm" hidden>
+        <p class="devtext">A hotusage collector on <b>{{HOST}}</b> is asking to
+          report usage as <b>{{EMAIL}}</b>.</p>
+        <p class="devtext"><b>Only approve this if you just clicked Sign In on
+          that machine.</b> Approving grants that collector permission to report
+          usage as you. Check the code matches the one in its menu:</p>
+        <div class="devcode">{{CODE}}</div>
+        <form method="post" action="/device/approve">
+          <input type="hidden" name="user_code" value="{{CODE}}">
+          <button class="signin" type="submit">Approve this collector</button>
+        </form>
+        <div class="alt">Not you? Close this page and the request expires on its own.</div>
+      </div>
+
+      <div id="done" hidden>
+        <p class="devtext">Approved. The collector on this account is signing in
+          now — you can close this page.</p>
+        <div class="alt"><a href="/">Back to the dashboard</a></div>
+      </div>
+
+      <div id="bad" hidden>
+        <div class="alt"><a href="/">Back to the dashboard</a></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    var err = document.getElementById('err');
+    if (err.textContent.trim()) err.classList.add('show');
+    var state = "{{STATE}}";
+    var panel = document.getElementById(state);
+    if (panel) panel.hidden = false;
+    if (state === 'done') document.getElementById('sub').textContent = 'Collector approved';
+    if (state === 'bad') document.getElementById('sub').textContent = 'Sign-in request';
+  </script>
+</body>
+</html>

@@ -14,6 +14,7 @@
       <div class="sub">AI coding-agent token &amp; context usage</div>
       <div class="err" id="err">Wrong email or password.</div>
       <form method="post" action="/login">
+        <input type="hidden" name="next" value="{{NEXT}}">
         <div class="field">
           <label for="email">Email</label>
           <input id="email" name="email" type="email" autocomplete="username" required autofocus>

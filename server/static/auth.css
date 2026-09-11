@@ -21,3 +21,9 @@ button.signin { width: 100%; margin-top: 6px; background: var(--ink); color: var
 .hint { display: none; color: var(--ink-2); font-size: 12.5px; margin: -6px 0 12px; }
 .hint.show { display: block; }
 .field input[readonly] { color: var(--ink-2); background: var(--surface); }
+.devtext { color: var(--ink-2); font-size: 13px; line-height: 1.5; margin: 0 0 12px; }
+.devtext b { color: var(--ink); }
+.devcode { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+           font-size: 22px; letter-spacing: 2px; text-align: center;
+           background: var(--page); border: 1px solid var(--border);
+           border-radius: 8px; padding: 12px; margin-bottom: 16px; }
