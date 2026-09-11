@@ -92,6 +92,25 @@ immediately (the server picks changes up within its ~60s caches).
 usage tables with their upsert keys, and records the database id on the org
 row. `delorg` keeps the database unless you pass `--delete-database`.
 
+## Collector sign-in
+
+Teammates do not need the shared ingest token any more. In the collector's menu
+bar, **Sign In...** opens the browser, they log in (or accept an invite first),
+and confirm that the code on the approval page matches the one in the menu. The
+server then mints a collector token bound to their account and the collector
+stores it. Headless machines run `hotusage-collector signin`, which prints the
+same URL and code.
+
+A collector token *identifies* its owner: ingest authenticated with one reports
+as that account no matter what address the payload claims. The shared
+`HOTUSAGE_INGEST_TOKEN` still works for existing installs, but it only admits —
+anyone holding it can report as any registered colleague — so prefer sign-in.
+
+```bash
+.venv/bin/python server/server.py listtokens            # who is signed in, from where
+.venv/bin/python server/server.py revoketoken <token>   # or: --user <email> for all of theirs
+```
+
 ## Managing users
 
 ```bash

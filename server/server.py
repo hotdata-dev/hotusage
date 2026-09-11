@@ -106,10 +106,30 @@ TABLES = {
                  ("invited_by", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
                  ("expires_at", "DOUBLE"), ("max_uses", "BIGINT"), ("uses", "BIGINT")],
     },
+    # Collector sign-in (device-authorization flow). A collector starts an
+    # attempt, the person approves it in the browser while logged in, and the
+    # collector polls until a token bound to their account is minted.
+    "device_codes": {
+        "key": ["device_code"],
+        "cols": [("device_code", "VARCHAR"), ("user_code", "VARCHAR"),
+                 ("hostname", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
+                 ("expires_at", "DOUBLE"), ("approved_email", "VARCHAR"),
+                 ("collector_token", "VARCHAR")],
+    },
+    # Per-user collector credentials: identity, not just admission. Ingest
+    # authenticated with one of these reports as its owner and cannot claim
+    # another colleague's address.
+    "collector_tokens": {
+        "key": ["token"],
+        "cols": [("token", "VARCHAR"), ("user_email", "VARCHAR"),
+                 ("hostname", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
+                 ("last_used_at", "TIMESTAMPTZ")],
+    },
 }
 
 USAGE_TABLES = ("sessions", "requests", "daily_usage")
-SYSTEM_TABLES = ("orgs", "users", "auth_sessions", "invites", "team_invites")
+SYSTEM_TABLES = ("orgs", "users", "auth_sessions", "invites", "team_invites",
+                 "device_codes", "collector_tokens")
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +379,10 @@ class AuthStore:
                                    f"WHERE expires_at < {time.time()}")
             if team:
                 self.sysdb.load("team_invites", team, "delete")
+            dev = self.sysdb.rows(f"SELECT device_code FROM {SYS}.public.device_codes "
+                                  f"WHERE expires_at < {time.time()}")
+            if dev:
+                self.sysdb.load("device_codes", dev, "delete")
         except Exception as e:
             print(f"warn: session purge: {e}", file=sys.stderr)
 
@@ -534,6 +558,84 @@ class AuthStore:
 
     def revoke_team_invite(self, token):
         self.sysdb.load("team_invites", [{"token": token}], "delete")
+
+    # --- collector sign-in (device authorization) ---------------------------
+    DEVICE_CODE_TTL = 10 * 60
+    DEVICE_POLL_INTERVAL = 3
+    # no vowels and no look-alikes (0/O, 1/I/L), so a code read off one screen
+    # and compared on another cannot be mistyped into a different valid code
+    USER_CODE_ALPHABET = "ACDEFGHJKMNPQRTUVWXY3479"
+
+    def start_device_auth(self, hostname):
+        """Begin a sign-in attempt. Returns (device_code, user_code)."""
+        device_code = secrets.token_urlsafe(32)
+        user_code = "-".join(
+            "".join(secrets.choice(self.USER_CODE_ALPHABET) for _ in range(4))
+            for _ in range(2))
+        self.sysdb.load("device_codes", [{
+            "device_code": device_code, "user_code": user_code,
+            "hostname": (hostname or "")[:80],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": time.time() + self.DEVICE_CODE_TTL,
+            "approved_email": "", "collector_token": "",
+        }], "upsert")
+        return device_code, user_code
+
+    def _device_row(self, column, value):
+        if not value or not re.match(r"^[A-Za-z0-9_-]{4,64}$", value):
+            return None
+        rows = self.sysdb.rows(f"SELECT device_code, user_code, hostname, expires_at, "
+                               f"approved_email, collector_token "
+                               f"FROM {SYS}.public.device_codes "
+                               f"WHERE {column} = {sql_str(value)}")
+        if not rows or float(rows[0]["expires_at"]) < time.time():
+            return None
+        return rows[0]
+
+    def get_device_by_user_code(self, user_code):
+        return self._device_row("user_code", (user_code or "").strip().upper())
+
+    def approve_device(self, user_code, email, hostname_confirm=None):
+        """The signed-in person approves an attempt: mint a collector token
+        bound to their account and hand it to the waiting collector."""
+        row = self.get_device_by_user_code(user_code)
+        if not row:
+            raise ValueError("this sign-in request is invalid or has expired")
+        if row["approved_email"]:
+            raise ValueError("this sign-in request was already approved")
+        token = secrets.token_urlsafe(32)
+        self.sysdb.load("collector_tokens", [{
+            "token": token, "user_email": email, "hostname": row["hostname"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_used_at": None,
+        }], "upsert")
+        self.sysdb.load("device_codes", [{**row, "approved_email": email,
+                                          "collector_token": token,
+                                          "created_at": datetime.now(timezone.utc).isoformat()}],
+                        "upsert")
+        return token
+
+    def poll_device(self, device_code):
+        """Collector side: None while pending, (email, token) once approved.
+        The row is consumed on success so the token is handed out only once."""
+        row = self._device_row("device_code", device_code)
+        if not row:
+            raise ValueError("this sign-in request is invalid or has expired")
+        if not row["approved_email"]:
+            return None
+        self.sysdb.load("device_codes", [{"device_code": row["device_code"]}], "delete")
+        return row["approved_email"], row["collector_token"]
+
+    def collector_token_user(self, token):
+        """The account a collector token belongs to, or None."""
+        if not token or not re.match(r"^[A-Za-z0-9_-]{20,64}$", token):
+            return None
+        rows = self.sysdb.rows(f"SELECT token, user_email, hostname, created_at "
+                               f"FROM {SYS}.public.collector_tokens "
+                               f"WHERE token = {sql_str(token)}")
+        if not rows:
+            return None
+        return rows[0]["user_email"]
 
     def seed(self):
         """First boot: system tables; org hotdata (with its dedicated database)
@@ -749,6 +851,14 @@ class Handler(BaseHTTPRequestHandler):
             Handler._rate[key] = hits
         return False
 
+    def _public_origin(self):
+        """(scheme, host) as the outside world sees us. Behind App Runner the
+        proxy sets both headers; run directly (dev) there is no TLS, so `http`
+        is the honest default rather than a link that cannot be opened."""
+        host = self.headers.get("X-Forwarded-Host", self.headers.get("Host", ""))
+        proto = self.headers.get("X-Forwarded-Proto", "http")
+        return proto, host
+
     def _page(self, name, subs=None):
         """Serve a static page with {{PLACEHOLDER}} substitution, HTML-escaped."""
         fp = os.path.join(STATIC_DIR, name)
@@ -765,16 +875,24 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode(errors="replace")
         return {k: v[0] for k, v in parse_qs(body).items()}
 
+    @staticmethod
+    def _safe_next(value):
+        """Only same-site absolute paths: never bounce a login to another host."""
+        if value.startswith("/") and not value.startswith("//"):
+            return value
+        return "/"
+
     def _handle_login(self):
         form = self._read_form()
+        nxt = self._safe_next(form.get("next", "/"))
         token = self.auth.login(form.get("email", ""), form.get("password", ""))
         if not token:
             time.sleep(0.3)  # soften brute force
-            self._redirect("/login?err=1")
+            self._redirect("/login?err=1&next=" + quote(nxt))
             return
         cookie = (f"hotusage_session={token}; HttpOnly; SameSite=Lax; Path=/; "
                   f"Max-Age={SESSION_TTL}")
-        self._redirect("/", extra=[("Set-Cookie", cookie)])
+        self._redirect(nxt, extra=[("Set-Cookie", cookie)])
 
     def _handle_register(self):
         if self._rate_limited("register"):
@@ -851,8 +969,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 length = int(self.headers.get("Content-Length", 0))
                 payload = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
-                host = self.headers.get("X-Forwarded-Host", self.headers.get("Host", ""))
-                proto = self.headers.get("X-Forwarded-Proto", "https")
+                proto, host = self._public_origin()
                 if payload.get("kind") == "team":
                     token = self.auth.create_team_invite(
                         viewer["org_slug"], viewer["email"],
@@ -878,6 +995,58 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"error: /api/invite: {e}", file=sys.stderr)
                 self._json({"error": str(e)[:300]}, 500)
             return
+        if path == "/api/device/start":
+            try:
+                if self._rate_limited("device"):
+                    self._json({"error": "too many attempts; try again later"}, 429)
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                payload = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+                device_code, user_code = self.auth.start_device_auth(
+                    payload.get("hostname", ""))
+                proto, host = self._public_origin()
+                self._json({"device_code": device_code, "user_code": user_code,
+                            "verification_url": f"{proto}://{host}/device?code={user_code}",
+                            "expires_in": AuthStore.DEVICE_CODE_TTL,
+                            "interval": AuthStore.DEVICE_POLL_INTERVAL})
+            except Exception as e:
+                print(f"error: /api/device/start: {e}", file=sys.stderr)
+                self._json({"error": "could not start sign-in"}, 500)
+            return
+        if path == "/api/device/poll":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                payload = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+                result = self.auth.poll_device(payload.get("device_code", ""))
+                if not result:
+                    self._json({"status": "pending"})
+                    return
+                email, token = result
+                self._json({"status": "approved", "user_email": email, "token": token})
+            except ValueError as e:
+                self._json({"status": "expired", "error": str(e)}, 400)
+            except Exception as e:
+                print(f"error: /api/device/poll: {e}", file=sys.stderr)
+                self._json({"error": "could not check sign-in"}, 500)
+            return
+        if path == "/device/approve":
+            try:
+                viewer = self._viewer()
+                if not viewer:
+                    self._redirect("/login")
+                    return
+                form = self._read_form()
+                code = form.get("user_code", "")
+                try:
+                    self.auth.approve_device(code, viewer["email"])
+                except ValueError as e:
+                    self._redirect("/device?err=" + quote(str(e)))
+                    return
+                self._redirect("/device?ok=1")
+            except Exception as e:
+                print(f"error: /device/approve: {e}", file=sys.stderr)
+                self._json({"error": "approval failed"}, 500)
+            return
         if path == "/login":
             try:
                 self._handle_login()
@@ -889,16 +1058,24 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
             return
         try:
-            if self.token:
-                auth = self.headers.get("Authorization", "")
-                if auth != "Bearer " + self.token:
-                    self._json({"error": "unauthorized"}, 401)
-                    return
+            # Two credentials are accepted. A per-user collector token (minted
+            # by the sign-in flow) also *identifies* the reporter, so it
+            # overrides whatever address the payload claims. The shared ingest
+            # token only admits: it cannot say who is reporting, so the claimed
+            # address stands. Prefer the former.
+            presented = self.headers.get("Authorization", "")[len("Bearer "):] \
+                if self.headers.get("Authorization", "").startswith("Bearer ") else ""
+            owner = self.auth.collector_token_user(presented) if presented else None
+            if not owner and self.token and presented != self.token:
+                self._json({"error": "unauthorized"}, 401)
+                return
             length = int(self.headers.get("Content-Length", 0))
             if length <= 0 or length > self.max_body:
                 self._json({"error": "bad content length"}, 400)
                 return
             payload = json.loads(self.rfile.read(length))
+            if owner:
+                payload["user_email"] = owner
             n, org_slug, db_id = apply_ingest(self.auth, self.pool, payload)
             if n:
                 self.stores.get(db_id).invalidate()
@@ -975,7 +1152,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True})
                 return
             if path == "/login":
-                self._static("login.html")
+                nxt = self._safe_next(parse_qs(parsed.query).get("next", ["/"])[0])
+                self._page("login.html", {"NEXT": nxt})
                 return
             if path == "/register":
                 err = parse_qs(parsed.query).get("err", [""])[0]
@@ -1005,6 +1183,31 @@ class Handler(BaseHTTPRequestHandler):
                                            "FIXED": "", "HINT": "",
                                            "ERROR": "This invite is invalid, expired, "
                                                     "or fully used."})
+                return
+            if path == "/device":
+                q = parse_qs(parsed.query)
+                viewer = self._viewer()
+                if not viewer:
+                    # sign in first, then come back to this exact approval
+                    self._redirect("/login?next=" + quote(self.path))
+                    return
+                if q.get("ok"):
+                    self._page("device.html", {"STATE": "done", "CODE": "", "HOST": "",
+                                               "EMAIL": viewer["email"], "ERROR": ""})
+                    return
+                code = (q.get("code", [""])[0] or "").strip().upper()
+                row = self.auth.get_device_by_user_code(code)
+                if not row or row["approved_email"]:
+                    self._page("device.html", {"STATE": "bad", "CODE": code, "HOST": "",
+                                               "EMAIL": viewer["email"],
+                                               "ERROR": q.get("err", [""])[0][:200] or
+                                               "That sign-in request is invalid, "
+                                               "expired, or already approved."})
+                    return
+                self._page("device.html", {"STATE": "confirm", "CODE": code,
+                                           "HOST": row["hostname"] or "an unnamed machine",
+                                           "EMAIL": viewer["email"],
+                                           "ERROR": q.get("err", [""])[0][:200]})
                 return
             if path.startswith("/static/"):
                 self._static(path[len("/static/"):])
@@ -1071,7 +1274,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 ADMIN_VERBS = ("adduser", "addorg", "resetpw", "deluser", "delorg",
-               "listusers", "listorgs", "listinvites", "revokeinvite")
+               "listusers", "listorgs", "listinvites", "revokeinvite",
+               "listtokens", "revoketoken")
 
 def user_admin_cli(argv):
     """Admin subcommands against the system database; returns True if handled."""
@@ -1079,11 +1283,16 @@ def user_admin_cli(argv):
         return False
     verb = argv[0]
     ap = argparse.ArgumentParser(prog=f"server.py {verb}")
-    if verb not in ("listusers", "listorgs", "listinvites"):
+    if verb == "revoketoken":
+        # optional: `revoketoken <token>` or `revoketoken --user <email>`
+        ap.add_argument("target", nargs="?", default=None, help="the collector token")
+    elif verb not in ("listusers", "listorgs", "listinvites", "listtokens"):
         ap.add_argument("target", help="email (user verbs) or org slug (org verbs)")
     ap.add_argument("--org", default="hotdata",
                     help="org slug for adduser / filter for listusers (default hotdata)")
     ap.add_argument("--name", default=None, help="display name for addorg")
+    ap.add_argument("--user", default=None,
+                    help="revoketoken: revoke every collector token for this address")
     ap.add_argument("--delete-database", action="store_true",
                     help="delorg only: also delete the org's usage database (destroys data)")
     ap.add_argument("--system-database", default=core.SYSTEM_DATABASE_ID)
@@ -1114,8 +1323,13 @@ def user_admin_cli(argv):
                                f"WHERE user_email = {sql_str(email)}")
         if toks:
             auth.sysdb.load("auth_sessions", toks, "delete")
+        toks = auth.sysdb.rows(f"SELECT token FROM {SYS}.public.collector_tokens "
+                               f"WHERE user_email = {sql_str(email)}")
+        if toks:
+            auth.sysdb.load("collector_tokens", toks, "delete")
         auth.sysdb.load("users", [{"email": email}], "delete")
-        print(f"deleted {email} (their already-ingested usage stays in the org database)")
+        print(f"deleted {email} ({len(toks)} collector token(s) revoked; their "
+              f"already-ingested usage stays in the org database)")
 
     elif verb == "delorg":
         org = auth.get_org(a.target, ttl=0)
@@ -1174,6 +1388,34 @@ def user_admin_cli(argv):
                   f"{left:.1f}d left")
         if not single and not team:
             print("no outstanding invites")
+
+    elif verb == "listtokens":
+        toks = auth.sysdb.rows(
+            f"SELECT token, user_email, hostname, created_at "
+            f"FROM {SYS}.public.collector_tokens ORDER BY user_email, created_at")
+        for t in toks:
+            print(f"{t['user_email']:<32} {t['hostname'] or '?':<24} "
+                  f"since {str(t['created_at'])[:10]}  {t['token']}")
+        if not toks:
+            print("no collector tokens (nobody has signed in a collector yet)")
+
+    elif verb == "revoketoken":
+        if not a.user and not a.target:
+            sys.exit("pass a token, or --user <email> to revoke all of theirs")
+        if a.user:
+            rows = auth.sysdb.rows(f"SELECT token FROM {SYS}.public.collector_tokens "
+                                   f"WHERE user_email = {sql_str(a.user.strip().lower())}")
+            if not rows:
+                sys.exit(f"no collector tokens for {a.user}")
+            auth.sysdb.load("collector_tokens", rows, "delete")
+            print(f"revoked {len(rows)} collector token(s) for {a.user}")
+        else:
+            rows = auth.sysdb.rows(f"SELECT token FROM {SYS}.public.collector_tokens "
+                                   f"WHERE token = {sql_str(a.target)}")
+            if not rows:
+                sys.exit("no such collector token")
+            auth.sysdb.load("collector_tokens", [{"token": a.target}], "delete")
+            print(f"revoked collector token {a.target}")
 
     elif verb == "revokeinvite":
         # match the raw rows, so an exhausted or expired link (which the live
