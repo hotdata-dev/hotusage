@@ -780,6 +780,7 @@ function renderSkeleton() {
 }
 
 let loadSeq = 0;
+let deepLinkPending = /^#s=[\w-]+$/.test(location.hash);
 
 async function load(fresh, days) {
   renderSkeleton();
@@ -811,6 +812,20 @@ async function load(fresh, days) {
     populateProjects();
     const m = location.hash.match(/^#s=([\w-]+)$/);
     if (m) state.expanded = m[1];
+    // a deep link can point at a session older than the loaded window;
+    // widen ONCE rather than rendering with nothing expanded and no hint why.
+    // One-shot: after the user touches the range themselves, their choice
+    // wins, even with the #s= hash still in the URL.
+    if (deepLinkPending && state.expanded && state.loadedDays !== Infinity &&
+        !state.data.sessions.some((x) => x.id === state.expanded)) {
+      deepLinkPending = false;
+      state.range = 'all';
+      for (const b of document.querySelectorAll('#rangeSeg button')) {
+        b.setAttribute('aria-pressed', String(b.dataset.range === 'all'));
+      }
+      load(false, 'all');
+      return;
+    }
     render();
   } catch (e) {
     if (seq !== loadSeq) return;  // superseded; the newer load owns the UI
@@ -828,6 +843,7 @@ async function load(fresh, days) {
 }
 
 wireSeg('rangeSeg', 'range', (v) => {
+  deepLinkPending = false;
   state.range = v;
   const want = v === 'all' ? Infinity : Number(v);
   if (want > state.loadedDays) load(false, v);  // fetch the wider window
