@@ -124,7 +124,10 @@ TABLES = {
     },
     # Per-user collector credentials: identity, not just admission. Ingest
     # authenticated with one of these reports as its owner and cannot claim
-    # another colleague's address.
+    # another colleague's address. `last_used_at` here is vestigial and always
+    # NULL -- it exists only because the live table already declares it and
+    # hotdata requires every column in an upsert; the real stamp lives in
+    # collector_token_usage.
     "collector_tokens": {
         "key": ["token"],
         "cols": [("token", "VARCHAR"), ("user_email", "VARCHAR"),
@@ -1367,6 +1370,16 @@ ADMIN_VERBS = ("adduser", "addorg", "resetpw", "deluser", "delorg",
                "listusers", "listorgs", "listinvites", "revokeinvite",
                "listtokens", "revoketoken")
 
+def drop_usage_rows(auth, rows):
+    """Best-effort cleanup of usage stamps. The credential delete is what
+    revokes access; a leftover stamp row grants nothing, so it must never
+    abort the work that follows it."""
+    try:
+        auth.sysdb.load("collector_token_usage", rows, "delete")
+    except Exception as e:
+        print(f"warn: usage row delete: {e}", file=sys.stderr)
+
+
 def user_admin_cli(argv):
     """Admin subcommands against the system database; returns True if handled."""
     if not argv or argv[0] not in ADMIN_VERBS:
@@ -1417,7 +1430,7 @@ def user_admin_cli(argv):
                                f"WHERE user_email = {sql_str(email)}")
         if toks:
             auth.sysdb.load("collector_tokens", toks, "delete")
-            auth.sysdb.load("collector_token_usage", toks, "delete")
+            drop_usage_rows(auth, toks)
         auth.sysdb.load("users", [{"email": email}], "delete")
         print(f"deleted {email} ({len(toks)} collector token(s) revoked; their "
               f"already-ingested usage stays in the org database)")
@@ -1504,7 +1517,7 @@ def user_admin_cli(argv):
             if not rows:
                 sys.exit(f"no collector tokens for {a.user}")
             auth.sysdb.load("collector_tokens", rows, "delete")
-            auth.sysdb.load("collector_token_usage", rows, "delete")
+            drop_usage_rows(auth, rows)
             print(f"revoked {len(rows)} collector token(s) for {a.user}")
         else:
             rows = auth.sysdb.rows(f"SELECT token FROM {SYS}.public.collector_tokens "
@@ -1512,7 +1525,7 @@ def user_admin_cli(argv):
             if not rows:
                 sys.exit("no such collector token")
             auth.sysdb.load("collector_tokens", [{"token": a.target}], "delete")
-            auth.sysdb.load("collector_token_usage", [{"token": a.target}], "delete")
+            drop_usage_rows(auth, [{"token": a.target}])
             print(f"revoked collector token {a.target}")
 
     elif verb == "revokeinvite":
