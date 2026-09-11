@@ -21,8 +21,7 @@ organization:
   database anywhere). Serves the login-gated admin dashboard at `/`, which
   reads the viewer's org database with user / tool / project / date filters.
 - **collector** — native Rust menu bar/daemon agent, one per user, in its own
-  repo (`hotusage-collector`). A Python reference implementation lives here in
-  `collector/`.
+  repo (`hotusage-collector`).
 
 Not collected: **Cursor** (stores no token counts locally; usage is
 server-side at cursor.com) and **Gemini CLI** (keeps no usage history).
@@ -51,9 +50,9 @@ org name + email + password provisions the org's dedicated database and signs
 them in. Slugs are derived from the org name; a taken slug is refused —
 joining an existing org goes through invites, never through guessing its slug.
 
-Members grow an org with **Invite teammate** in the dashboard header, which
-mints two kinds of link. Nothing is emailed yet — you share the link yourself.
-Unauthenticated register/invite endpoints are rate limited (5/hour per IP).
+Admins grow an org from the **Organization** page, which mints two kinds of
+link. Nothing is emailed yet — you share the link yourself. Unauthenticated
+register/invite endpoints are rate limited (5/hour per IP).
 
 - **Single-use invite** — enter one teammate's email; the link is bound to
   that address and valid 7 days. It dies the moment it is used.
@@ -141,17 +140,10 @@ that has stopped reporting, without a write on every ingest.
 .venv/bin/python server/server.py deluser jane@acme.com              # + revokes their logins
 ```
 
-Onboarding a teammate (the **Invite teammate** button in the dashboard is
-the usual path; the CLI equivalent is):
-
-1. `adduser jane@acme.com --org acme` — send them the printed initial
-   password (they can ask you to `resetpw` any time; there is no self-serve
-   reset).
-2. They install the collector (see the `hotusage-collector` repo:
-   `hotusage-collector install`) and set `user_email: jane@acme.com` plus the
-   server URL and ingest token in `~/.hotusage/collector.json`.
-3. Their next sync flows into the org's database and they can log in to the
-   dashboard.
+Onboarding a teammate is an invite from the Organization page, not these
+commands: they open the link, choose a password, run the collector installer,
+and it signs them in. The CLI path exists for scripted setup and recovery —
+`adduser` prints an initial password, and there is no self-serve reset.
 
 **Ingest is rejected (403) for emails that are not registered users** — there
 is no org database to route them to. The collector surfaces the error in its
@@ -161,7 +153,7 @@ org database.
 
 ## System administration
 
-- **Stores.** Everything lives in hotdata (prod Default Workspace):
+- **Stores.** Everything lives in one hotdata workspace (`core.py`):
   - `hotusage-system` — `orgs` (slug, name, `database_id`), `users` (scrypt
     password hashes), `auth_sessions` (login tokens). Private operational
     data; keep out of analytics and don't widen query access to this database.
@@ -170,11 +162,12 @@ org database.
     are idempotent key-based upserts, so collectors can safely re-send.
   - Each database documents itself:
     `hotdata databases context show DATAMODEL --database <id>`.
-- **Secrets.** `HOTUSAGE_INGEST_TOKEN` is the shared collector credential —
-  rotate by restarting the server with a new value and updating collector
-  configs (the old token stops working immediately). The hotdata workspace API
-  key comes from `HOTDATA_API_KEY` or `~/.hotdata/hotdata.json`; it is the
-  only credential the server needs.
+- **Secrets.** Collectors should sign in (per-user tokens, revocable from the
+  Organization page). `HOTUSAGE_INGEST_TOKEN` remains as a shared fallback —
+  it only admits, so anyone holding it can report as any registered
+  colleague; rotate by restarting the server with a new value. The hotdata
+  workspace API key comes from `HOTUSAGE_HOTDATA_API` / `HOTDATA_API_KEY` or
+  `~/.hotdata/hotdata.json`.
 - **Sessions.** Dashboard logins last 30 days; `deluser` revokes a user's
   sessions, and expired sessions are purged opportunistically on login.
   Rotating a password does not revoke existing sessions — delete the user's
@@ -196,11 +189,16 @@ org database.
 ## Collector
 
 See the `hotusage-collector` repo (Rust; macOS menu bar, Windows tray, Linux
-daemon; `install` registers it as a login service). Config lives in
-`~/.hotusage/collector.json`; state in `collector-state.json` tracks
-per-session fingerprints so only changed sessions are re-sent. The Python
-reference implementation in `collector/collector.py` shares both files and the
-wire format (verified field-for-field against the Rust port).
+daemon). One line installs it, registers a login service, and signs the
+person in:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-collector/main/install.sh | sh
+```
+
+Config lives in `~/.hotusage/collector.json` (mode 0600 — it holds a token);
+`collector-state.json` tracks per-session fingerprints so only changed
+sessions are re-sent.
 
 ## Notes
 
