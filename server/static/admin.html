@@ -48,6 +48,24 @@
       </div>
     </div>
 
+    <div class="card sysonly" hidden>
+      <div class="card-head">
+        <h2>All organizations</h2>
+        <span class="spacer"></span>
+        <span class="flabel">System admin</span>
+      </div>
+      <table class="admintable" id="orgs"></table>
+      <div class="cardfoot">
+        <input id="newOrgName" type="text" placeholder="Organization name">
+        <input id="newOrgOwner" type="email" placeholder="Owner email (optional)">
+        <button class="refresh" id="orgCreate" type="button">Create organization</button>
+      </div>
+      <div class="linkout" id="orgLinkOut" hidden>
+        <input id="orgLinkValue" readonly>
+        <button class="refresh" id="orgLinkCopy" type="button">Copy</button>
+      </div>
+    </div>
+
     <div class="card adminonly">
       <div class="card-head"><h2>Pending invites</h2></div>
       <table class="admintable" id="invites"></table>

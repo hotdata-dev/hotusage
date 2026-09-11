@@ -140,6 +140,27 @@ function showLink(link, note) {
   $('#linkValue').select();
 }
 
+function renderOrgs() {
+  const t = $('#orgs');
+  t.replaceChildren();
+  const orgs = state.allOrgs || [];
+  t.append(el('tr', { class: 'head' },
+    el('th', { text: 'Organization' }), el('th', { text: 'Slug' }),
+    el('th', { text: 'Members' }), el('th', { text: 'Created' }), el('th', { text: '' })));
+  for (const o of orgs) {
+    const controls = el('div', { class: 'rowactions' });
+    if (!o.members && o.slug !== state.org.slug) {
+      controls.append(action('Delete', true, () => {
+        if (!confirm(`Delete '${o.slug}'? Its database is kept.`)) return;
+        act(() => api('/api/admin/delete-org', { slug: o.slug }));
+      }));
+    }
+    t.append(row(
+      o.name + (o.slug === state.org.slug ? ' (yours)' : ''),
+      o.slug, String(o.members), day(o.created_at), controls));
+  }
+}
+
 async function load() {
   state = await api('/api/admin/state');
   window.setViewer(state.viewer.email, state.org.name);
@@ -150,8 +171,11 @@ async function load() {
   $('#orgName').disabled = !admin;
   $('#orgSave').disabled = !admin;
   for (const n of document.querySelectorAll('.adminonly')) n.hidden = !admin;
+  const sys = !!state.viewer.isSystemAdmin;
+  for (const n of document.querySelectorAll('.sysonly')) n.hidden = !sys;
   renderMembers();
   if (admin) { renderInvites(); renderCollectors(); }
+  if (sys) renderOrgs();
 }
 
 $('#orgSave').addEventListener('click', () => act(async () => {
@@ -170,6 +194,25 @@ $('#teamCreate').addEventListener('click', () => act(async () => {
   });
   showLink(r.link, `reusable, expires in ${r.expires_days} days`);
 }));
+$('#orgCreate').addEventListener('click', () => act(async () => {
+  const r = await api('/api/admin/create-org', {
+    name: $('#newOrgName').value.trim(),
+    owner_email: $('#newOrgOwner').value.trim(),
+  });
+  $('#newOrgName').value = ''; $('#newOrgOwner').value = '';
+  if (r.invite_link) {
+    $('#orgLinkValue').value = r.invite_link;
+    $('#orgLinkValue').title = 'send this to the owner; they join as the org admin';
+    $('#orgLinkOut').hidden = false;
+    $('#orgLinkValue').select();
+  }
+}));
+$('#orgLinkCopy').addEventListener('click', () => {
+  const f = $('#orgLinkValue');
+  f.select();
+  if (navigator.clipboard) navigator.clipboard.writeText(f.value);
+  else document.execCommand('copy');
+});
 $('#linkCopy').addEventListener('click', () => {
   const f = $('#linkValue');
   f.select();
