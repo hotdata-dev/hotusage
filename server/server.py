@@ -106,6 +106,12 @@ TABLES = {
                  ("invited_by", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
                  ("expires_at", "DOUBLE"), ("max_uses", "BIGINT"), ("uses", "BIGINT")],
     },
+    # Usage stamps live apart from the credential: writing one must never be
+    # able to re-create a token row that a sign-out or revoke just deleted.
+    "collector_token_usage": {
+        "key": ["token"],
+        "cols": [("token", "VARCHAR"), ("last_used_at", "TIMESTAMPTZ")],
+    },
     # Collector sign-in (device-authorization flow). A collector starts an
     # attempt, the person approves it in the browser while logged in, and the
     # collector polls until a token bound to their account is minted.
@@ -129,7 +135,7 @@ TABLES = {
 
 USAGE_TABLES = ("sessions", "requests", "daily_usage")
 SYSTEM_TABLES = ("orgs", "users", "auth_sessions", "invites", "team_invites",
-                 "device_codes", "collector_tokens")
+                 "device_codes", "collector_tokens", "collector_token_usage")
 
 
 # ---------------------------------------------------------------------------
@@ -632,6 +638,10 @@ class AuthStore:
         if not email:
             return None
         self.sysdb.load("collector_tokens", [{"token": token}], "delete")
+        try:
+            self.sysdb.load("collector_token_usage", [{"token": token}], "delete")
+        except Exception as e:
+            print(f"warn: usage row delete: {e}", file=sys.stderr)
         return email
 
     # An admin wants to know which machines are still reporting, but a write
@@ -642,12 +652,14 @@ class AuthStore:
         """The account a collector token belongs to, or None."""
         if not token or not re.match(r"^[A-Za-z0-9_-]{20,64}$", token):
             return None
-        rows = self.sysdb.rows(f"SELECT token, user_email, hostname, created_at, "
-                               f"last_used_at FROM {SYS}.public.collector_tokens "
+        # Never join here: hotdata errors on a declared-but-empty table, and a
+        # LEFT JOIN against the (initially empty) usage table would empty this
+        # result and reject a perfectly good credential.
+        rows = self.sysdb.rows(f"SELECT token, user_email FROM {SYS}.public.collector_tokens "
                                f"WHERE token = {sql_str(token)}")
         if not rows:
             return None
-        row = rows[0]
+        row = dict(rows[0], last_used_at=self._last_used(token))
         try:
             self._touch_token(row)
         except Exception as e:
@@ -674,14 +686,21 @@ class AuthStore:
             value = value.replace(tzinfo=timezone.utc)
         return (now - value).total_seconds()
 
+    def _last_used(self, token):
+        """The stamp, or None while the usage table is still empty."""
+        rows = self.sysdb.rows(f"SELECT last_used_at FROM {SYS}.public.collector_token_usage "
+                               f"WHERE token = {sql_str(token)}")
+        return rows[0]["last_used_at"] if rows else None
+
     def _touch_token(self, row):
         age = self._age_seconds(row.get("last_used_at"))
         if age is not None and age < self.LAST_USED_RESOLUTION:
             return
         try:
-            self.sysdb.load("collector_tokens", [{
-                "token": row["token"], "user_email": row["user_email"],
-                "hostname": row["hostname"], "created_at": str(row["created_at"]),
+            # a row here grants nothing; a stale one is swept when its token is
+            # revoked, and an orphan is harmless
+            self.sysdb.load("collector_token_usage", [{
+                "token": row["token"],
                 "last_used_at": datetime.now(timezone.utc).isoformat(),
             }], "upsert")
         except Exception as e:  # never fail an ingest over a usage stamp
@@ -1401,6 +1420,7 @@ def user_admin_cli(argv):
                                f"WHERE user_email = {sql_str(email)}")
         if toks:
             auth.sysdb.load("collector_tokens", toks, "delete")
+            auth.sysdb.load("collector_token_usage", toks, "delete")
         auth.sysdb.load("users", [{"email": email}], "delete")
         print(f"deleted {email} ({len(toks)} collector token(s) revoked; their "
               f"already-ingested usage stays in the org database)")
@@ -1465,10 +1485,14 @@ def user_admin_cli(argv):
 
     elif verb == "listtokens":
         toks = auth.sysdb.rows(
-            f"SELECT token, user_email, hostname, created_at, last_used_at "
+            f"SELECT token, user_email, hostname, created_at "
             f"FROM {SYS}.public.collector_tokens ORDER BY user_email, created_at")
+        # merged in Python, not joined: see collector_token_user
+        used_by = {u["token"]: u["last_used_at"] for u in auth.sysdb.rows(
+            f"SELECT token, last_used_at FROM {SYS}.public.collector_token_usage")}
         for t in toks:
-            used = str(t["last_used_at"])[:16] if t["last_used_at"] else "never"
+            stamp = used_by.get(t["token"])
+            used = str(stamp)[:16] if stamp else "never"
             print(f"{t['user_email']:<32} {t['hostname'] or '?':<20} "
                   f"since {str(t['created_at'])[:10]}  last used {used:<16}  {t['token']}")
         if not toks:
@@ -1483,6 +1507,7 @@ def user_admin_cli(argv):
             if not rows:
                 sys.exit(f"no collector tokens for {a.user}")
             auth.sysdb.load("collector_tokens", rows, "delete")
+            auth.sysdb.load("collector_token_usage", rows, "delete")
             print(f"revoked {len(rows)} collector token(s) for {a.user}")
         else:
             rows = auth.sysdb.rows(f"SELECT token FROM {SYS}.public.collector_tokens "
@@ -1490,6 +1515,7 @@ def user_admin_cli(argv):
             if not rows:
                 sys.exit("no such collector token")
             auth.sysdb.load("collector_tokens", [{"token": a.target}], "delete")
+            auth.sysdb.load("collector_token_usage", [{"token": a.target}], "delete")
             print(f"revoked collector token {a.target}")
 
     elif verb == "revokeinvite":
