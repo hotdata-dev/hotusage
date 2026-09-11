@@ -285,7 +285,7 @@ class ClientPool:
             return self.clients[database_id]
 
 
-def gather(tasks=None, **thunks):
+def gather(tasks=None, /, **thunks):
     """Run independent zero-arg lookups at once and return {name: result}.
 
     Takes a dict, keyword thunks, or both -- a dict keyed by org slug cannot
@@ -294,7 +294,10 @@ def gather(tasks=None, **thunks):
     Every system-table read is a separate round trip to the hotdata API
     (~120 ms each), so a handler that needs a dozen of them spends seconds
     waiting in series. They do not depend on each other, so overlap them.
-    An exception in any thunk propagates, as it would have in series."""
+    An exception in any thunk propagates, as it would have in series.
+    A thunk may gather() in turn, so the queries in flight can reach the
+    product of the two fan-outs -- fine against an API that does not
+    throttle concurrent queries, worth revisiting if that changes."""
     work = {**(tasks or {}), **thunks}
     if not work:
         return {}
