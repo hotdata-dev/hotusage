@@ -625,7 +625,7 @@ function buildDetailRow(s) {
 // ---------------------------------------------------------------------------
 function renderTiles(sessions) {
   const box = $('#tiles');
-  box.replaceChildren();
+  box.replaceChildren();  // clears the skeleton tiles
   const sum = (f) => sessions.reduce((a, s) => a + f(s), 0);
   // member count lives on the admin page, not here: this row is about usage
   const tiles = [
@@ -748,7 +748,27 @@ function populateProviders() {
   seg.previousElementSibling.style.display = show ? '' : 'none';
 }
 
+const TILE_COUNT = 6; // must match renderTiles(), so nothing reflows on arrival
+
+function renderSkeleton() {
+  const tiles = $('#tiles');
+  if (!tiles.childElementCount) {
+    for (let i = 0; i < TILE_COUNT; i++) {
+      tiles.append(el('div', { class: 'tile' },
+        el('div', { class: 'skel skel-label' }),
+        el('div', { class: 'skel skel-value' })));
+    }
+  }
+  const chart = $('#dailyChart');
+  if (!chart.childElementCount) chart.append(el('div', { class: 'skel skel-chart' }));
+  const sess = $('#sessions');
+  if (!sess.childElementCount) {
+    for (let i = 0; i < 6; i++) sess.append(el('div', { class: 'skel skel-row' }));
+  }
+}
+
 async function load(fresh) {
+  renderSkeleton();
   const boxes = document.querySelectorAll('.chartbox');
   boxes.forEach((b) => b.classList.add('loading'));
   try {
@@ -771,6 +791,10 @@ async function load(fresh) {
     if (m) state.expanded = m[1];
     render();
   } catch (e) {
+    // clear every skeleton, not just the list: render() bails while
+    // state.data is null, so the shimmer would run forever under the error
+    $('#tiles').replaceChildren();
+    $('#dailyChart').replaceChildren();
     $('#sessions').replaceChildren(el('div', {
       class: 'empty',
       text: 'Failed to load data from hotdata: ' + (e && e.message ? e.message : 'is the server running?'),
