@@ -17,8 +17,9 @@
       <div id="confirm" hidden>
         <p class="devtext">A hotusage collector on <b>{{HOST}}</b> is asking to
           report usage as <b>{{EMAIL}}</b>.</p>
-        <p class="devtext">Check that this code matches the one shown in the
-          collector's menu:</p>
+        <p class="devtext"><b>Only approve this if you just clicked Sign In on
+          that machine.</b> Approving grants that collector permission to report
+          usage as you. Check the code matches the one in its menu:</p>
         <div class="devcode">{{CODE}}</div>
         <form method="post" action="/device/approve">
           <input type="hidden" name="user_code" value="{{CODE}}">

@@ -122,8 +122,7 @@ TABLES = {
     "collector_tokens": {
         "key": ["token"],
         "cols": [("token", "VARCHAR"), ("user_email", "VARCHAR"),
-                 ("hostname", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
-                 ("last_used_at", "TIMESTAMPTZ")],
+                 ("hostname", "VARCHAR"), ("created_at", "TIMESTAMPTZ")],
     },
 }
 
@@ -607,7 +606,6 @@ class AuthStore:
         self.sysdb.load("collector_tokens", [{
             "token": token, "user_email": email, "hostname": row["hostname"],
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "last_used_at": None,
         }], "upsert")
         self.sysdb.load("device_codes", [{**row, "approved_email": email,
                                           "collector_token": token,
@@ -877,8 +875,10 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _safe_next(value):
-        """Only same-site absolute paths: never bounce a login to another host."""
-        if value.startswith("/") and not value.startswith("//"):
+        """Only same-site absolute paths: never bounce a login to another host.
+        A backslash counts as a slash here -- browsers normalise `/\\evil.com`
+        to `//evil.com` before resolving Location, so `//` alone is not enough."""
+        if re.match(r"^/($|[^/\\])", value or ""):
             return value
         return "/"
 
@@ -997,7 +997,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/device/start":
             try:
-                if self._rate_limited("device"):
+                if self._rate_limited("device", limit=self.INVITE_RATE_LIMIT):
                     self._json({"error": "too many attempts; try again later"}, 429)
                     return
                 length = int(self.headers.get("Content-Length", 0))
@@ -1065,8 +1065,10 @@ class Handler(BaseHTTPRequestHandler):
             # address stands. Prefer the former.
             presented = self.headers.get("Authorization", "")[len("Bearer "):] \
                 if self.headers.get("Authorization", "").startswith("Bearer ") else ""
-            owner = self.auth.collector_token_user(presented) if presented else None
-            if not owner and self.token and presented != self.token:
+            shared = bool(self.token) and presented == self.token
+            owner = None if shared or not presented \
+                else self.auth.collector_token_user(presented)
+            if not owner and self.token and not shared:
                 self._json({"error": "unauthorized"}, 401)
                 return
             length = int(self.headers.get("Content-Length", 0))
