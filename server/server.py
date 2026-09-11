@@ -659,12 +659,13 @@ class AuthStore:
                                f"WHERE token = {sql_str(token)}")
         if not rows:
             return None
-        row = dict(rows[0], last_used_at=self._last_used(token))
         try:
-            self._touch_token(row)
+            # inside the guard: reading the stamp is as fallible as writing it,
+            # and neither may stand between a valid token and its owner
+            self._touch_token(token)
         except Exception as e:
             print(f"warn: last_used_at: {e}", file=sys.stderr)
-        return row["user_email"]
+        return rows[0]["user_email"]
 
     @staticmethod
     def _age_seconds(value):
@@ -686,25 +687,21 @@ class AuthStore:
             value = value.replace(tzinfo=timezone.utc)
         return (now - value).total_seconds()
 
-    def _last_used(self, token):
-        """The stamp, or None while the usage table is still empty."""
-        rows = self.sysdb.rows(f"SELECT last_used_at FROM {SYS}.public.collector_token_usage "
-                               f"WHERE token = {sql_str(token)}")
-        return rows[0]["last_used_at"] if rows else None
-
-    def _touch_token(self, row):
-        age = self._age_seconds(row.get("last_used_at"))
+    def _touch_token(self, token):
+        """Refresh the usage stamp for `token` if it has gone stale. The caller
+        wraps this: nothing here may fail an authentication."""
+        prev = self.sysdb.rows(
+            f"SELECT last_used_at FROM {SYS}.public.collector_token_usage "
+            f"WHERE token = {sql_str(token)}")
+        age = self._age_seconds(prev[0]["last_used_at"]) if prev else None
         if age is not None and age < self.LAST_USED_RESOLUTION:
             return
-        try:
-            # a row here grants nothing; a stale one is swept when its token is
-            # revoked, and an orphan is harmless
-            self.sysdb.load("collector_token_usage", [{
-                "token": row["token"],
-                "last_used_at": datetime.now(timezone.utc).isoformat(),
-            }], "upsert")
-        except Exception as e:  # never fail an ingest over a usage stamp
-            print(f"warn: last_used_at update: {e}", file=sys.stderr)
+        # a row here grants nothing; it is swept when its token is revoked,
+        # and an orphan is harmless
+        self.sysdb.load("collector_token_usage", [{
+            "token": token,
+            "last_used_at": datetime.now(timezone.utc).isoformat(),
+        }], "upsert")
 
     def seed(self):
         """First boot: system tables; org hotdata (with its dedicated database)
