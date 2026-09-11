@@ -107,6 +107,14 @@ TABLES = {
                  ("invited_by", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
                  ("expires_at", "DOUBLE"), ("max_uses", "BIGINT"), ("uses", "BIGINT")],
     },
+    # Which orgs a person belongs to. users.org_slug remains their ACTIVE org
+    # (what ingest routes to and the dashboard shows); these rows are the set
+    # they may switch among. Backfilled lazily from users.org_slug.
+    "org_memberships": {
+        "key": ["email", "org_slug"],
+        "cols": [("email", "VARCHAR"), ("org_slug", "VARCHAR"),
+                 ("created_at", "TIMESTAMPTZ")],
+    },
     # Platform operators: may create and delete organizations from the UI.
     # Distinct from org_admins, which is scoped to one org -- creating an org
     # provisions a billable hotdata database, so it is not an org-level power.
@@ -155,7 +163,7 @@ TABLES = {
 USAGE_TABLES = ("sessions", "requests", "daily_usage")
 SYSTEM_TABLES = ("orgs", "users", "auth_sessions", "invites", "team_invites",
                  "device_codes", "collector_tokens", "collector_token_usage",
-                 "org_admins", "system_admins")
+                 "org_admins", "system_admins", "org_memberships")
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +372,7 @@ class AuthStore:
         # an org someone can join but nobody can manage is a dead end, so the
         # first member of an empty org (UI-created, or CLI addorg) becomes
         # its admin
+        self.add_membership(email, org_slug)
         if first_member:
             self.set_admin(email, org_slug)
         with self.lock:
@@ -481,12 +490,14 @@ class AuthStore:
         self.set_admin(email, slug)  # whoever creates the org administers it
 
     def create_invite(self, email, org_slug, invited_by):
-        """Invite `email` into `org_slug`; returns the single-use token."""
+        """Invite `email` into `org_slug`; returns the single-use token. A
+        registered address is fine now -- accepting adds a membership."""
         email = email.strip().lower()
         if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
             raise ValueError("that does not look like an email address")
-        if self.get_user(email):
-            raise ValueError("that email is already registered")
+        user = self.get_user(email)
+        if user and org_slug in self.memberships(email):
+            raise ValueError("they are already a member of this organization")
         token = secrets.token_urlsafe(32)
         self.sysdb.load("invites", [{
             "token": token, "email": email, "org_slug": org_slug,
@@ -510,14 +521,78 @@ class AuthStore:
             return None
         return rows[0]
 
-    def accept_invite(self, token, password):
-        """Consume the invite: create its user in its org. Returns the email."""
+    def accept_invite(self, token, password=None, as_user=None):
+        """Consume the invite. A new address needs a password and gets an
+        account; an existing account must be signed in as the invited address
+        (`as_user`) and gains a membership plus the switch. Returns the email."""
         inv = self.get_invite(token)
         if not inv:
             raise ValueError("this invite is invalid or has expired")
-        self.create_user(inv["email"], password, inv["org_slug"])
+        email = inv["email"]
+        if self.get_user(email):
+            # possession of the link is not proof of the mailbox; the session is
+            if (as_user or "").strip().lower() != email:
+                raise ValueError("this invite belongs to an existing account - "
+                                 "sign in as " + email + " first")
+            self.join_org(email, inv["org_slug"])
+        else:
+            self.create_user(email, password, inv["org_slug"])
         self.sysdb.load("invites", [{"token": token}], "delete")
-        return inv["email"]
+        return email
+
+    def join_org(self, email, org_slug):
+        """Add an existing account to another org and make it active. The
+        first member of an empty org still becomes its admin."""
+        first_member = not self.sysdb.rows(
+            f"SELECT email FROM {SYS}.public.org_memberships "
+            f"WHERE org_slug = {sql_str(org_slug)} LIMIT 1")
+        self.ensure_org(org_slug)
+        self.add_membership(email, org_slug)
+        if first_member:
+            self.set_admin(email, org_slug)
+        self.switch_org(email, org_slug)
+
+    # --- multi-org membership -------------------------------------------------
+    def add_membership(self, email, org_slug):
+        self.sysdb.load("org_memberships", [{
+            "email": email.strip().lower(), "org_slug": org_slug,
+            "created_at": datetime.now(timezone.utc).isoformat()}], "upsert")
+
+    def memberships(self, email):
+        """Org slugs this person belongs to. Accounts predating this table
+        get their active org backfilled on first read."""
+        email = email.strip().lower()
+        rows = self.sysdb.rows(f"SELECT org_slug FROM {SYS}.public.org_memberships "
+                               f"WHERE email = {sql_str(email)}")
+        slugs = {r["org_slug"] for r in rows}
+        if not slugs:
+            user = self.get_user(email)
+            if user:
+                self.add_membership(email, user["org_slug"])
+                slugs = {user["org_slug"]}
+        return slugs
+
+    def switch_org(self, email, org_slug):
+        """Point the account's ACTIVE org (ingest routing, dashboard) at one
+        of its memberships."""
+        email = email.strip().lower()
+        if org_slug not in self.memberships(email):
+            raise ValueError("you are not a member of that organization")
+        user = self.get_user(email)
+        if not user:
+            raise ValueError("no such user")
+        if user["org_slug"] == org_slug:
+            return
+        rows = self.sysdb.rows(f"SELECT email, password_hash, org_slug, created_at "
+                               f"FROM {SYS}.public.users WHERE email = {sql_str(email)}")
+        row = rows[0]
+        self.sysdb.load("users", [{"email": email,
+                                   "password_hash": row["password_hash"],
+                                   "org_slug": org_slug,
+                                   "created_at": str(row["created_at"])}], "upsert")
+        with self.lock:
+            self.route_cache.pop(email, None)
+            self.token_cache.clear()  # sessions carry the org they were minted in
 
     # --- platform operators --------------------------------------------------
     def is_system_admin(self, email):
@@ -563,7 +638,9 @@ class AuthStore:
             raise ValueError("no such organization")
         members = self.sysdb.rows(f"SELECT email FROM {SYS}.public.users "
                                   f"WHERE org_slug = {sql_str(slug)} LIMIT 1")
-        if members:
+        held = self.sysdb.rows(f"SELECT email FROM {SYS}.public.org_memberships "
+                               f"WHERE org_slug = {sql_str(slug)} LIMIT 1")
+        if members or held:
             raise ValueError("that organization still has members")
         for table, col in (("org_admins", "org_slug"), ("invites", "org_slug"),
                            ("team_invites", "org_slug")):
@@ -600,10 +677,14 @@ class AuthStore:
                             [{"org_slug": org_slug, "email": email}], "delete")
 
     def members(self, org_slug):
-        """Everyone in the org, with their admin flag."""
+        """Everyone who belongs to the org (active there or not)."""
         rows = self.sysdb.rows(
-            f"SELECT email, created_at FROM {SYS}.public.users "
+            f"SELECT email, created_at FROM {SYS}.public.org_memberships "
             f"WHERE org_slug = {sql_str(org_slug)} ORDER BY created_at, email")
+        if not rows:  # orgs older than the membership table
+            rows = self.sysdb.rows(
+                f"SELECT email, created_at FROM {SYS}.public.users "
+                f"WHERE org_slug = {sql_str(org_slug)} ORDER BY created_at, email")
         admins = self.admins(org_slug)
         return [{**r, "is_admin": r["email"] in admins} for r in rows]
 
@@ -626,9 +707,10 @@ class AuthStore:
                 self.sysdb.load("collector_token_usage", ctoks, "delete")
             except Exception as e:
                 print(f"warn: usage row delete: {e}", file=sys.stderr)
-        user = self.get_user(email)
-        if user:
-            self.set_admin(email, user["org_slug"], False)
+        for slug in self.memberships(email):
+            self.set_admin(email, slug, False)
+            self.sysdb.load("org_memberships",
+                            [{"email": email, "org_slug": slug}], "delete")
         # and the platform grant: otherwise whoever re-registers this address
         # at the public /register endpoint inherits system admin
         self.set_system_admin(email, False)
@@ -745,7 +827,7 @@ class AuthStore:
             return None
         return inv
 
-    def accept_team_invite(self, token, email, password):
+    def accept_team_invite(self, token, email, password, as_user=None):
         """Join `token`'s org as `email`. The link stays usable until it expires
         or hits max_uses."""
         inv = self.get_team_invite(token)
@@ -757,8 +839,13 @@ class AuthStore:
         if inv["domain"] and email.rsplit("@", 1)[1] != inv["domain"]:
             raise ValueError(f"this link only accepts @{inv['domain']} addresses")
         if self.get_user(email):
-            raise ValueError("that email is already registered")
-        self.create_user(email, password, inv["org_slug"])
+            if (as_user or "").strip().lower() != email:
+                raise ValueError("that email already has an account - sign in first")
+            if inv["org_slug"] in self.memberships(email):
+                raise ValueError("you are already a member of this organization")
+            self.join_org(email, inv["org_slug"])
+        else:
+            self.create_user(email, password, inv["org_slug"])
         # Best-effort use counter: concurrent joins can read the same value and
         # let a link go a use or two past max_uses. The domain restriction is
         # the real control; tighten this if the cap ever needs to be exact.
@@ -1257,18 +1344,30 @@ class Handler(BaseHTTPRequestHandler):
             return
         form = self._read_form()
         password = form.get("password") or ""
+        viewer = self._viewer()
+        as_user = viewer["email"] if viewer else None
         try:
-            if len(password) < 8:
+            inv = self.auth.get_invite(token)
+            joining_existing = (
+                (inv and self.auth.get_user(inv["email"])) or
+                (not inv and form.get("email") and
+                 self.auth.get_user(form.get("email", ""))))
+            if not joining_existing and len(password) < 8:
                 raise ValueError("password must be at least 8 characters")
-            if self.auth.get_invite(token):
-                email = self.auth.accept_invite(token, password)
+            if inv:
+                email = self.auth.accept_invite(token, password, as_user=as_user)
             else:
                 # reusable team link: the joiner supplies their own address
                 email = self.auth.accept_team_invite(
-                    token, form.get("email", ""), password)
+                    token, form.get("email", ""), password, as_user=as_user)
         except ValueError as e:
             self._redirect(f"/invite/{quote(token, safe='')}?err=" + quote(str(e))
                            + "&email=" + quote(form.get("email", "")[:120]))
+            return
+        if viewer and viewer["email"] == email:
+            # already signed in; switch_org cleared the token cache, so the
+            # next request re-reads the new active org
+            self._redirect("/")
             return
         session = self.auth.login(email, password)
         cookie = (f"hotusage_session={session}; HttpOnly; SameSite=Lax; Path=/; "
@@ -1367,10 +1466,10 @@ class Handler(BaseHTTPRequestHandler):
                     if action == "create-org":
                         owner = (body.get("owner_email") or "").strip().lower()
                         if owner:  # refuse before the database exists
+                            # an existing account is fine: accepting adds the
+                            # new org as a membership
                             if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", owner):
                                 raise ValueError("that does not look like an email address")
-                            if self.auth.get_user(owner):
-                                raise ValueError("that email is already registered")
                         slug = self.auth.create_org(body.get("name", ""))
                         out = {"ok": True, "slug": slug}
                         if owner:
@@ -1433,6 +1532,22 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"error: {path}: {e}", file=sys.stderr)
                 self._json({"error": "that did not work"}, 500)
+            return
+        if path == "/api/switch-org":
+            try:
+                viewer = self._viewer()
+                if not viewer:
+                    self._json({"error": "unauthorized"}, 401)
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+                self.auth.switch_org(viewer["email"], body.get("slug", ""))
+                self._json({"ok": True, "active": body.get("slug", "")})
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+            except Exception as e:
+                print(f"error: /api/switch-org: {e}", file=sys.stderr)
+                self._json({"error": "could not switch"}, 500)
             return
         if path == "/api/collector/signout":
             try:
@@ -1622,8 +1737,13 @@ class Handler(BaseHTTPRequestHandler):
                 err = parse_qs(parsed.query).get("err", [""])[0]
                 inv = self.auth.get_invite(token)
                 if inv:  # single-use: the address is fixed by the inviter
+                    viewer = self._viewer()
+                    mode = "new"
+                    if self.auth.get_user(inv["email"]):
+                        mode = "join" if viewer and viewer["email"] == inv["email"] \
+                            else "login"
                     self._page("invite.html", {"TOKEN": token, "EMAIL": inv["email"],
-                                               "FIXED": "1", "HINT": "",
+                                               "FIXED": "1", "HINT": "", "MODE": mode,
                                                "ORG": inv["org_name"] or inv["org_slug"],
                                                "ERROR": err[:200]})
                     return
@@ -1633,12 +1753,12 @@ class Handler(BaseHTTPRequestHandler):
                             if team["domain"] else "")
                     typed = parse_qs(parsed.query).get("email", [""])[0][:120]
                     self._page("invite.html", {"TOKEN": token, "EMAIL": typed,
-                                               "FIXED": "", "HINT": hint,
+                                               "FIXED": "", "HINT": hint, "MODE": "new",
                                                "ORG": team["org_name"] or team["org_slug"],
                                                "ERROR": err[:200]})
                     return
                 self._page("invite.html", {"TOKEN": "", "EMAIL": "", "ORG": "",
-                                           "FIXED": "", "HINT": "",
+                                           "FIXED": "", "HINT": "", "MODE": "new",
                                            "ERROR": "This invite is invalid, expired, "
                                                     "or fully used."})
                 return
@@ -1721,6 +1841,13 @@ class Handler(BaseHTTPRequestHandler):
                     payload["viewer"]["isSystemAdmin"] = True
                     payload["allOrgs"] = self.auth.all_orgs()
                 self._json(payload)
+            elif path == "/api/orgs":
+                slugs = sorted(self.auth.memberships(viewer["email"]))
+                orgs = []
+                for slug in slugs:
+                    o = self.auth.get_org(slug)
+                    orgs.append({"slug": slug, "name": (o or {}).get("name") or slug})
+                self._json({"active": viewer["org_slug"], "orgs": orgs})
             elif path == "/api/status":
                 self._json({"ok": True, "org": viewer["org_slug"],
                             "orgDatabase": viewer.get("database_id")})
@@ -1861,8 +1988,10 @@ def user_admin_cli(argv):
         if toks:
             auth.sysdb.load("collector_tokens", toks, "delete")
             drop_usage_rows(auth, toks)
-        if user:
-            auth.set_admin(email, user["org_slug"], False)
+        for slug in auth.memberships(email):
+            auth.set_admin(email, slug, False)
+            auth.sysdb.load("org_memberships",
+                            [{"email": email, "org_slug": slug}], "delete")
         auth.set_system_admin(email, False)
         auth.sysdb.load("users", [{"email": email}], "delete")
         print(f"deleted {email} ({len(toks)} collector token(s) revoked; their "

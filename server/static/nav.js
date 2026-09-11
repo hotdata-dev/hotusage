@@ -35,11 +35,40 @@
       ...(p.id === current ? { 'aria-current': 'page' } : {}),
     })));
 
+  const orgList = node('div', { id: 'navOrgs' });
   const menu = node('div', { class: 'menu', hidden: '' },
     node('div', { class: 'menu-email', id: 'navEmail' }),
     node('div', { class: 'menu-sep' }),
+    orgList,
     node('a', { class: 'menu-item', href: '/admin', text: 'Organization' }),
     node('a', { class: 'menu-item', href: '/logout', text: 'Log out' }));
+
+  // Org switcher: shown only when the account belongs to more than one org.
+  // Switching changes the ACTIVE org server-side (dashboard + ingest routing),
+  // then reloads so every view re-reads it.
+  fetch('/api/orgs').then((r) => (r.ok ? r.json() : null)).then((d) => {
+    if (!d || !d.orgs || d.orgs.length < 2) return;
+    orgList.append(node('div', { class: 'menu-email', text: 'Switch organization' }));
+    for (const o of d.orgs) {
+      const isActive = o.slug === d.active;
+      orgList.append(node('button', {
+        class: 'menu-item menu-org' + (isActive ? ' active' : ''),
+        type: 'button',
+        text: (isActive ? '✓ ' : '') + o.name,
+        onclick: async (e) => {
+          e.stopPropagation();
+          if (isActive) { menu.hidden = true; return; }
+          const r = await fetch('/api/switch-org', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ slug: o.slug }),
+          });
+          if (r.ok) location.href = '/';
+        },
+      }));
+    }
+    orgList.append(node('div', { class: 'menu-sep' }));
+  }).catch(() => {});
 
   const button = node('button', {
     class: 'account', id: 'navAccount', type: 'button', 'aria-haspopup': 'menu',

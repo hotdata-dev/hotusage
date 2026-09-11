@@ -214,3 +214,6 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .skel-value { height: 38px; width: 42%; }
 .skel-chart { height: 268px; }
 .skel-row { height: 38px; margin: 6px 0; }
+.menu-org { width: 100%; text-align: left; background: none; border: 0;
+            font: inherit; cursor: pointer; }
+.menu-org.active { color: var(--muted); cursor: default; }

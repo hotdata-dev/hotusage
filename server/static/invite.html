@@ -21,12 +21,12 @@
                team links leave it empty for the joiner to fill in -->
           <input id="email" name="email" type="email" value="{{EMAIL}}" required>
         </div>
-        <div class="field">
+        <div class="field" id="pwField">
           <label for="password">Choose a password</label>
           <input id="password" name="password" type="password" minlength="8"
                  autocomplete="new-password" required autofocus>
         </div>
-        <button class="signin" type="submit">Join {{ORG}}</button>
+        <button class="signin" type="submit" id="joinBtn">Join {{ORG}}</button>
       </form>
       <div class="alt"><a href="/login">Sign in instead</a></div>
     </div>
@@ -40,6 +40,26 @@
     // ignores anything else posted, so don't let it be edited
     var email = document.getElementById('email');
     if ("{{FIXED}}") email.readOnly = true; else email.focus();
+    // the invited address already has an account: joining adds a membership,
+    // so no new password -- either a one-click join (signed in as them) or a
+    // bounce through login first
+    var mode = "{{MODE}}";
+    if (mode === 'join') {
+      var pw = document.getElementById('pwField');
+      pw.style.display = 'none';
+      document.getElementById('password').required = false;
+      document.getElementById('joinBtn').textContent = 'Join {{ORG}} as {{EMAIL}}';
+    } else if (mode === 'login') {
+      document.getElementById('form').style.display = 'none';
+      document.getElementById('sub').textContent =
+        'This invite adds {{EMAIL}}\u2019s existing account to {{ORG}}.';
+      var alt = document.querySelector('.alt');
+      alt.innerHTML = '';
+      var a = document.createElement('a');
+      a.href = '/login?next=' + encodeURIComponent(location.pathname);
+      a.textContent = 'Sign in as {{EMAIL}} to join';
+      alt.appendChild(a);
+    }
     // no token = invalid/expired invite: hide the form, keep the message
     if (!"{{TOKEN}}") {
       document.getElementById('form').style.display = 'none';

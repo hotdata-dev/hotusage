@@ -106,7 +106,11 @@ is recovered with `makeadmin`, never by whoever joins next.
 
 ## Managing organizations
 
-Every user belongs to exactly one organization. Each organization owns a
+A user can belong to several organizations; `users.org_slug` is the ACTIVE
+one — the org their collector reports into and their dashboard shows — and
+the account menu switches it when they hold more than one membership.
+Inviting an already-registered address adds a membership (accepted from
+their signed-in session, no new password) instead of erroring. Each organization owns a
 dedicated hotdata database — isolation between orgs is physical, not a query
 filter. All admin commands run against the system database and take effect
 immediately (the server picks changes up within its ~60s caches).
