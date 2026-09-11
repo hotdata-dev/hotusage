@@ -48,7 +48,8 @@ function row(...cells) {
 }
 
 function action(label, danger, onclick) {
-  return el('button', { class: danger ? 'linkbtn danger' : 'linkbtn', type: 'button', onclick });
+  return el('button',
+    { class: danger ? 'linkbtn danger' : 'linkbtn', type: 'button', text: label, onclick });
 }
 
 async function act(fn) {
@@ -69,14 +70,12 @@ function renderMembers() {
     if (admin) {
       const b = action(m.is_admin ? 'Make member' : 'Make admin', false, () =>
         act(() => api('/api/admin/set-admin', { email: m.email, admin: !m.is_admin })));
-      b.textContent = m.is_admin ? 'Make member' : 'Make admin';
       controls.append(b);
       if (!self) {
         const r = action('Remove', true, () => {
           if (!confirm(`Remove ${m.email}? Their logins and collectors are revoked.`)) return;
           act(() => api('/api/admin/remove-user', { email: m.email }));
         });
-        r.textContent = 'Remove';
         controls.append(r);
       }
     }
@@ -108,7 +107,6 @@ function renderInvites() {
     const days = Math.max(0, Math.round((Number(i.expires_at) * 1000 - Date.now()) / 86400000));
     const revoke = action('Revoke', true, () => act(() =>
       api('/api/admin/revoke-invite', { token: i.token })));
-    revoke.textContent = 'Revoke';
     t.append(row(who, i.kind === 'single' ? 'Single-use' : 'Team link', uses,
       `${days}d left`, el('div', { class: 'rowactions' }, revoke)));
   }
@@ -130,7 +128,6 @@ function renderCollectors() {
       if (!confirm(`Revoke the collector on ${c.hostname || 'that machine'}? It stops reporting.`)) return;
       act(() => api('/api/admin/revoke-token', { token: c.token }));
     });
-    revoke.textContent = 'Revoke';
     t.append(row(c.user_email, c.hostname || '?', day(c.created_at),
       minute(c.last_used_at), el('div', { class: 'rowactions' }, revoke)));
   }

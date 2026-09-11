@@ -608,8 +608,10 @@ class AuthStore:
         toks = self.sysdb.rows(
             f"SELECT token, user_email, hostname, created_at "
             f"FROM {SYS}.public.collector_tokens WHERE user_email IN ({wanted})")
+        tokens = ", ".join(sql_str(t["token"]) for t in toks) or "''"
         used = {u["token"]: u["last_used_at"] for u in self.sysdb.rows(
-            f"SELECT token, last_used_at FROM {SYS}.public.collector_token_usage")}
+            f"SELECT token, last_used_at FROM {SYS}.public.collector_token_usage "
+            f"WHERE token IN ({tokens})")}
         return [{**t, "last_used_at": used.get(t["token"])} for t in toks]
 
     # --- reusable team links -------------------------------------------------
@@ -1165,6 +1167,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not viewer:
                     self._json({"error": "unauthorized"}, 401)
                     return
+                # inviting grows the org: management, so admins only
+                if not self.auth.is_admin(viewer["email"], viewer["org_slug"]):
+                    self._json({"error": "only an organization admin can invite"}, 403)
+                    return
                 length = int(self.headers.get("Content-Length", 0))
                 payload = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
                 proto, host = self._public_origin()
@@ -1620,7 +1626,8 @@ def user_admin_cli(argv):
 
     elif verb == "deluser":
         email = a.target.strip().lower()
-        if not auth.get_user(email):
+        user = auth.get_user(email)
+        if not user:
             sys.exit(f"no such user: {email}")
         toks = auth.sysdb.rows(f"SELECT token FROM {SYS}.public.auth_sessions "
                                f"WHERE user_email = {sql_str(email)}")
@@ -1631,6 +1638,8 @@ def user_admin_cli(argv):
         if toks:
             auth.sysdb.load("collector_tokens", toks, "delete")
             drop_usage_rows(auth, toks)
+        if user:
+            auth.set_admin(email, user["org_slug"], False)
         auth.sysdb.load("users", [{"email": email}], "delete")
         print(f"deleted {email} ({len(toks)} collector token(s) revoked; their "
               f"already-ingested usage stays in the org database)")
@@ -1645,6 +1654,10 @@ def user_admin_cli(argv):
             sys.exit(f"org '{a.target}' still has {len(members)} user(s): "
                      + ", ".join(m["email"] for m in members)
                      + "\ndelete them first (server.py deluser <email>)")
+        grants = auth.sysdb.rows(f"SELECT org_slug, email FROM {SYS}.public.org_admins "
+                                 f"WHERE org_slug = {sql_str(a.target)}")
+        if grants:
+            auth.sysdb.load("org_admins", grants, "delete")
         auth.sysdb.load("orgs", [{"slug": a.target}], "delete")
         if a.delete_database and org.get("database_id"):
             import hotdata

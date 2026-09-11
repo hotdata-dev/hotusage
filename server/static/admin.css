@@ -29,3 +29,6 @@
 .cardfoot #teamMaxUses { max-width: 110px; }
 .linkout { display: flex; gap: 8px; margin-top: 10px; }
 .linkout input { flex: 1; font-variant-numeric: tabular-nums; }
+
+/* display rules above beat the hidden attribute unless it is spelled out */
+.cardfoot[hidden], .linkout[hidden], .orgrow[hidden] { display: none; }
