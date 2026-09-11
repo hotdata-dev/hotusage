@@ -196,3 +196,21 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .menu-item { display: block; color: var(--ink); text-decoration: none; font-size: 13px;
              padding: 7px 8px; border-radius: 7px; }
 .menu-item:hover { background: var(--page); }
+
+/* ---- first-paint skeleton ----
+   The shell (header, filters, cards) is static HTML, but tiles, the chart and
+   the session list are built from data. Without placeholders the page paints
+   as an empty dark rectangle and then jumps once the fetch resolves, so each
+   region reserves its real size up front. .skel-chart matches the daily
+   chart's rendered height (plotH 230 + margins 38). */
+.skel { background: linear-gradient(90deg, var(--page) 25%, var(--border) 37%, var(--page) 63%);
+        background-size: 400% 100%; border-radius: 6px;
+        animation: skelshift 1.4s ease-in-out infinite; }
+@keyframes skelshift { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .skel { animation: none; background: var(--page); }
+}
+.skel-label { height: 12px; width: 58%; margin-bottom: 10px; }
+.skel-value { height: 24px; width: 42%; }
+.skel-chart { height: 268px; }
+.skel-row { height: 38px; margin: 6px 0; }

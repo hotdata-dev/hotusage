@@ -625,7 +625,7 @@ function buildDetailRow(s) {
 // ---------------------------------------------------------------------------
 function renderTiles(sessions) {
   const box = $('#tiles');
-  box.replaceChildren();
+  box.replaceChildren();  // clears the skeleton tiles
   const sum = (f) => sessions.reduce((a, s) => a + f(s), 0);
   // member count lives on the admin page, not here: this row is about usage
   const tiles = [
@@ -748,7 +748,27 @@ function populateProviders() {
   seg.previousElementSibling.style.display = show ? '' : 'none';
 }
 
+const TILE_COUNT = 6; // must match renderTiles(), so nothing reflows on arrival
+
+function renderSkeleton() {
+  const tiles = $('#tiles');
+  if (!tiles.childElementCount) {
+    for (let i = 0; i < TILE_COUNT; i++) {
+      tiles.append(el('div', { class: 'tile' },
+        el('div', { class: 'skel skel-label' }),
+        el('div', { class: 'skel skel-value' })));
+    }
+  }
+  const chart = $('#dailyChart');
+  if (!chart.childElementCount) chart.append(el('div', { class: 'skel skel-chart' }));
+  const sess = $('#sessions');
+  if (!sess.childElementCount) {
+    for (let i = 0; i < 6; i++) sess.append(el('div', { class: 'skel skel-row' }));
+  }
+}
+
 async function load(fresh) {
+  renderSkeleton();
   const boxes = document.querySelectorAll('.chartbox');
   boxes.forEach((b) => b.classList.add('loading'));
   try {
@@ -780,6 +800,7 @@ async function load(fresh) {
   }
 }
 
+renderSkeleton();
 wireSeg('rangeSeg', 'range', (v) => { state.range = v; });
 wireSeg('metricSeg', 'metric', (v) => { state.metric = v; });
 wireSeg('providerSeg', 'provider', (v) => { state.provider = v; populateProjects(); });
