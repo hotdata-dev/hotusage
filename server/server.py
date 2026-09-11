@@ -106,6 +106,14 @@ TABLES = {
                  ("invited_by", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
                  ("expires_at", "DOUBLE"), ("max_uses", "BIGINT"), ("uses", "BIGINT")],
     },
+    # Who may manage an org. Its own table rather than a column on `users`:
+    # hotdata fixes a table's columns at first write, so adding one to a live
+    # table is not possible. Absence of a row means "ordinary member".
+    "org_admins": {
+        "key": ["org_slug", "email"],
+        "cols": [("org_slug", "VARCHAR"), ("email", "VARCHAR"),
+                 ("granted_at", "TIMESTAMPTZ")],
+    },
     # Usage stamps live apart from the credential: writing one must never be
     # able to re-create a token row that a sign-out or revoke just deleted.
     "collector_token_usage": {
@@ -138,7 +146,8 @@ TABLES = {
 
 USAGE_TABLES = ("sessions", "requests", "daily_usage")
 SYSTEM_TABLES = ("orgs", "users", "auth_sessions", "invites", "team_invites",
-                 "device_codes", "collector_tokens", "collector_token_usage")
+                 "device_codes", "collector_tokens", "collector_token_usage",
+                 "org_admins")
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +459,7 @@ class AuthStore:
         if not org or org["database_id"] != db_id:
             raise ValueError(f"an organization with the slug '{slug}' already exists")
         self.create_user(email, password, slug)
+        self.set_admin(email, slug)  # whoever creates the org administers it
 
     def create_invite(self, email, org_slug, invited_by):
         """Invite `email` into `org_slug`; returns the single-use token."""
@@ -489,6 +499,118 @@ class AuthStore:
         self.create_user(inv["email"], password, inv["org_slug"])
         self.sysdb.load("invites", [{"token": token}], "delete")
         return inv["email"]
+
+    # --- who may manage the org ---------------------------------------------
+    def is_admin(self, email, org_slug):
+        rows = self.sysdb.rows(
+            f"SELECT email FROM {SYS}.public.org_admins "
+            f"WHERE org_slug = {sql_str(org_slug)} AND email = {sql_str(email)}")
+        return bool(rows)
+
+    def admins(self, org_slug):
+        return {r["email"] for r in self.sysdb.rows(
+            f"SELECT email FROM {SYS}.public.org_admins "
+            f"WHERE org_slug = {sql_str(org_slug)}")}
+
+    def set_admin(self, email, org_slug, on=True):
+        email = email.strip().lower()
+        if on:
+            self.sysdb.load("org_admins", [{
+                "org_slug": org_slug, "email": email,
+                "granted_at": datetime.now(timezone.utc).isoformat()}], "upsert")
+        else:
+            self.sysdb.load("org_admins",
+                            [{"org_slug": org_slug, "email": email}], "delete")
+
+    def members(self, org_slug):
+        """Everyone in the org, with their admin flag."""
+        rows = self.sysdb.rows(
+            f"SELECT email, created_at FROM {SYS}.public.users "
+            f"WHERE org_slug = {sql_str(org_slug)} ORDER BY created_at, email")
+        admins = self.admins(org_slug)
+        return [{**r, "is_admin": r["email"] in admins} for r in rows]
+
+    def remove_user(self, email):
+        """Delete a member: their logins, collector tokens and account. Their
+        already-ingested usage stays in the org database."""
+        email = email.strip().lower()
+        toks = self.sysdb.rows(f"SELECT token FROM {SYS}.public.auth_sessions "
+                               f"WHERE user_email = {sql_str(email)}")
+        if toks:
+            self.sysdb.load("auth_sessions", toks, "delete")
+            with self.lock:
+                for t in toks:
+                    self.token_cache.pop(t["token"], None)
+        ctoks = self.sysdb.rows(f"SELECT token FROM {SYS}.public.collector_tokens "
+                                f"WHERE user_email = {sql_str(email)}")
+        if ctoks:
+            self.sysdb.load("collector_tokens", ctoks, "delete")
+            try:
+                self.sysdb.load("collector_token_usage", ctoks, "delete")
+            except Exception as e:
+                print(f"warn: usage row delete: {e}", file=sys.stderr)
+        user = self.get_user(email)
+        if user:
+            self.set_admin(email, user["org_slug"], False)
+        self.sysdb.load("users", [{"email": email}], "delete")
+        with self.lock:
+            self.route_cache.pop(email, None)
+
+    def rename_org(self, slug, name):
+        # read every column: an upsert must carry the whole row, and get_org
+        # deliberately selects only what routing needs
+        rows = self.sysdb.rows(f"SELECT slug, name, database_id, created_at "
+                               f"FROM {SYS}.public.orgs WHERE slug = {sql_str(slug)}")
+        if not rows:
+            raise ValueError("no such organization")
+        row = rows[0]
+        self.sysdb.load("orgs", [{"slug": row["slug"], "name": name,
+                                  "database_id": row["database_id"],
+                                  "created_at": str(row["created_at"])}], "upsert")
+        with self.lock:
+            self.org_cache.pop(slug, None)
+            # sessions carry the org name they were minted with, so drop them
+            # from the cache or the old name lingers until they expire
+            self.token_cache.clear()
+
+    def revoke_any_invite(self, token, org_slug):
+        """Revoke an invite of either kind, but only one belonging to `org_slug`."""
+        for table in ("invites", "team_invites"):
+            rows = self.sysdb.rows(f"SELECT token, org_slug FROM {SYS}.public.{table} "
+                                   f"WHERE token = {sql_str(token)}")
+            if rows and rows[0]["org_slug"] == org_slug:
+                self.sysdb.load(table, [{"token": token}], "delete")
+                return
+        raise ValueError("no such invite in this organization")
+
+    def revoke_collector_token_for_org(self, token, org_slug):
+        email = self.collector_token_user(token)
+        user = self.get_user(email) if email else None
+        if not user or user["org_slug"] != org_slug:
+            raise ValueError("no such collector in this organization")
+        self.revoke_collector_token(token)
+
+    def org_invites(self, org_slug):
+        single = [{**r, "kind": "single"} for r in self.sysdb.rows(
+            f"SELECT token, email, expires_at FROM {SYS}.public.invites "
+            f"WHERE org_slug = {sql_str(org_slug)}")]
+        team = [{**r, "kind": "team"} for r in self.sysdb.rows(
+            f"SELECT token, domain, max_uses, uses, expires_at "
+            f"FROM {SYS}.public.team_invites WHERE org_slug = {sql_str(org_slug)}")]
+        now = time.time()
+        return [i for i in single + team if float(i["expires_at"]) > now]
+
+    def org_collectors(self, org_slug):
+        emails = [m["email"] for m in self.members(org_slug)]
+        if not emails:
+            return []
+        wanted = ", ".join(sql_str(e) for e in emails)
+        toks = self.sysdb.rows(
+            f"SELECT token, user_email, hostname, created_at "
+            f"FROM {SYS}.public.collector_tokens WHERE user_email IN ({wanted})")
+        used = {u["token"]: u["last_used_at"] for u in self.sysdb.rows(
+            f"SELECT token, last_used_at FROM {SYS}.public.collector_token_usage")}
+        return [{**t, "last_used_at": used.get(t["token"])} for t in toks]
 
     # --- reusable team links -------------------------------------------------
     TEAM_INVITE_TTL = 30 * 24 * 3600
@@ -715,6 +837,7 @@ class AuthStore:
         password = secrets.token_urlsafe(12)
         self.ensure_org("hotdata", "hotdata")
         self.create_user("eddie@hotdata.dev", password, "hotdata")
+        self.set_admin("eddie@hotdata.dev", "hotdata")
         return password
 
 
@@ -1088,6 +1211,64 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"error: /api/device/start: {e}", file=sys.stderr)
                 self._json({"error": "could not start sign-in"}, 500)
             return
+        if path.startswith("/api/admin/"):
+            try:
+                viewer = self._viewer()
+                if not viewer:
+                    self._json({"error": "unauthorized"}, 401)
+                    return
+                org = viewer["org_slug"]
+                if not self.auth.is_admin(viewer["email"], org):
+                    self._json({"error": "only an organization admin can do that"}, 403)
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+                action = path[len("/api/admin/"):]
+                target = (body.get("email") or "").strip().lower()
+
+                if action == "remove-user":
+                    if target == viewer["email"]:
+                        raise ValueError("you cannot remove yourself")
+                    member = self.auth.get_user(target)
+                    if not member or member["org_slug"] != org:
+                        raise ValueError("that person is not in this organization")
+                    self.auth.remove_user(target)
+                    self._json({"ok": True})
+
+                elif action == "set-admin":
+                    member = self.auth.get_user(target)
+                    if not member or member["org_slug"] != org:
+                        raise ValueError("that person is not in this organization")
+                    on = bool(body.get("admin"))
+                    # an org with no admin can never be managed again
+                    if not on and self.auth.admins(org) == {target}:
+                        raise ValueError("an organization needs at least one admin")
+                    self.auth.set_admin(target, org, on)
+                    self._json({"ok": True})
+
+                elif action == "revoke-invite":
+                    self.auth.revoke_any_invite(body.get("token", ""), org)
+                    self._json({"ok": True})
+
+                elif action == "revoke-token":
+                    self.auth.revoke_collector_token_for_org(body.get("token", ""), org)
+                    self._json({"ok": True})
+
+                elif action == "rename-org":
+                    name = (body.get("name") or "").strip()[:60]
+                    if len(name) < 2:
+                        raise ValueError("organization name must be at least 2 characters")
+                    self.auth.rename_org(org, name)
+                    self._json({"ok": True, "name": name})
+
+                else:
+                    self._json({"error": "not found"}, 404)
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+            except Exception as e:
+                print(f"error: {path}: {e}", file=sys.stderr)
+                self._json({"error": "that did not work"}, 500)
+            return
         if path == "/api/collector/signout":
             try:
                 auth = self.headers.get("Authorization", "")
@@ -1277,6 +1458,12 @@ class Handler(BaseHTTPRequestHandler):
                                            "ERROR": "This invite is invalid, expired, "
                                                     "or fully used."})
                 return
+            if path == "/admin":
+                if not self._viewer():
+                    self._redirect("/login?next=" + quote(self.path))
+                    return
+                self._static("admin.html")
+                return
             if path == "/device":
                 q = parse_qs(parsed.query)
                 viewer = self._viewer()
@@ -1325,6 +1512,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._static("index.html")
             elif path == "/api/data":
                 self._json(self._org_payload(viewer, fresh=fresh))
+            elif path == "/api/admin/state":
+                org = viewer["org_slug"]
+                is_admin = self.auth.is_admin(viewer["email"], org)
+                payload = {
+                    "viewer": {"email": viewer["email"], "isAdmin": is_admin},
+                    "org": {"slug": org, "name": viewer["org_name"],
+                            "database": viewer.get("database_id")},
+                    "members": self.auth.members(org),
+                }
+                if is_admin:  # invite tokens are credentials: admins only
+                    payload["invites"] = self.auth.org_invites(org)
+                    payload["collectors"] = self.auth.org_collectors(org)
+                self._json(payload)
             elif path == "/api/status":
                 self._json({"ok": True, "org": viewer["org_slug"],
                             "orgDatabase": viewer.get("database_id")})
@@ -1368,7 +1568,7 @@ class Handler(BaseHTTPRequestHandler):
 
 ADMIN_VERBS = ("adduser", "addorg", "resetpw", "deluser", "delorg",
                "listusers", "listorgs", "listinvites", "revokeinvite",
-               "listtokens", "revoketoken")
+               "listtokens", "revoketoken", "makeadmin", "unadmin")
 
 def drop_usage_rows(auth, rows):
     """Best-effort cleanup of usage stamps. The credential delete is what
@@ -1492,6 +1692,17 @@ def user_admin_cli(argv):
                   f"{left:.1f}d left")
         if not single and not team:
             print("no outstanding invites")
+
+    elif verb in ("makeadmin", "unadmin"):
+        user = auth.get_user(a.target)
+        if not user:
+            sys.exit(f"no such user: {a.target}")
+        on = verb == "makeadmin"
+        if not on and auth.admins(user["org_slug"]) == {user["email"]}:
+            sys.exit(f"{user['email']} is the only admin of '{user['org_slug']}'")
+        auth.set_admin(user["email"], user["org_slug"], on)
+        print(f"{user['email']} is now {'an admin' if on else 'a member'} "
+              f"of '{user['org_slug']}'")
 
     elif verb == "listtokens":
         toks = auth.sysdb.rows(
