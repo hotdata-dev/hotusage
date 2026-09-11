@@ -878,7 +878,11 @@ class Handler(BaseHTTPRequestHandler):
         """Only same-site absolute paths: never bounce a login to another host.
         A backslash counts as a slash here -- browsers normalise `/\\evil.com`
         to `//evil.com` before resolving Location, so `//` alone is not enough."""
-        if re.match(r"^/($|[^/\\])", value or ""):
+        value = value or ""
+        # `$` would match before a trailing newline, letting a CR/LF ride into
+        # the Location header (response splitting), so anchor with \Z and
+        # reject control characters outright.
+        if re.match(r"^/(\Z|[^/\\])", value) and not re.search(r"[\x00-\x1f\x7f]", value):
             return value
         return "/"
 
@@ -937,7 +941,7 @@ class Handler(BaseHTTPRequestHandler):
                 email = self.auth.accept_team_invite(
                     token, form.get("email", ""), password)
         except ValueError as e:
-            self._redirect(f"/invite/{token}?err=" + quote(str(e))
+            self._redirect(f"/invite/{quote(token, safe='')}?err=" + quote(str(e))
                            + "&email=" + quote(form.get("email", "")[:120]))
             return
         session = self.auth.login(email, password)
