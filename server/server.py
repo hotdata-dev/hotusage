@@ -35,6 +35,7 @@ import secrets
 import sys
 import tempfile
 import threading
+import gzip
 import time
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -853,11 +854,27 @@ class HotdataStore:
         self.hd = hd
         self.ttl = ttl
         self.cache = {}
+        self.encoded = {}
         self.lock = threading.Lock()
 
     def invalidate(self):
         with self.lock:
             self.cache.clear()
+            self.encoded.clear()
+
+    def encoded_payload(self, key, build, fresh=False):
+        """Gzipped JSON for one viewer, cached beside the rows it is built
+        from. Repeat loads then cost a dict lookup instead of a few MB of
+        serialisation and compression."""
+        now = time.time()
+        with self.lock:
+            hit = self.encoded.get(key)
+            if hit and not fresh and now - hit[0] < self.ttl:
+                return hit[1]
+        body = gzip.compress(json.dumps(build()).encode(), 6)
+        with self.lock:
+            self.encoded[key] = (now, body)
+        return body
 
     def _cached(self, key, fn, fresh=False):
         with self.lock:
@@ -985,7 +1002,22 @@ class Handler(BaseHTTPRequestHandler):
     token = None       # ingest bearer token ('' = dev mode, accept all)
     max_body = 64 * 1024 * 1024
 
-    def _send(self, code, body, ctype, extra=None):
+    # Below this, framing and headers cost more than the bytes saved.
+    GZIP_MIN = 1024
+
+    def _accepts_gzip(self):
+        return "gzip" in self.headers.get("Accept-Encoding", "").lower()
+
+    def _send(self, code, body, ctype, extra=None, gzipped=False):
+        extra = list(extra or [])
+        if gzipped:
+            extra.append(("Content-Encoding", "gzip"))
+        elif len(body) >= self.GZIP_MIN and self._accepts_gzip():
+            # the dashboard payload is a few MB of repetitive JSON; nothing
+            # sits in front of this server to compress it (the App Runner
+            # hostnames are DNS-only, not proxied), so do it here
+            body = gzip.compress(body, 6)
+            extra.append(("Content-Encoding", "gzip"))
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -1517,7 +1549,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/" or path == "/index.html":
                 self._static("index.html")
             elif path == "/api/data":
-                self._json(self._org_payload(viewer, fresh=fresh))
+                db = viewer.get("database_id")
+                if db and self._accepts_gzip():
+                    body = self.stores.get(db).encoded_payload(
+                        viewer["email"], lambda: self._org_payload(viewer, fresh=fresh),
+                        fresh=fresh)
+                    self._send(200, body, "application/json", gzipped=True)
+                else:
+                    self._json(self._org_payload(viewer, fresh=fresh))
             elif path == "/api/admin/state":
                 org = viewer["org_slug"]
                 is_admin = self.auth.is_admin(viewer["email"], org)
