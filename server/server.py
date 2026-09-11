@@ -688,6 +688,23 @@ class AuthStore:
         return [{**r, "is_admin": r["email"] in admins}
                 for r in self._member_rows(org_slug)]
 
+    def remove_from_org(self, email, org_slug):
+        """Remove one membership. The account (logins, collectors) survives
+        while other memberships remain -- an admin of one org has no authority
+        over the target's access to another."""
+        email = email.strip().lower()
+        remaining = self.memberships(email) - {org_slug}
+        if not remaining:
+            self.remove_user(email)
+            return
+        self.set_admin(email, org_slug, False)
+        self.sysdb.load("org_memberships",
+                        [{"email": email, "org_slug": org_slug}], "delete")
+        user = self.get_user(email)
+        if user and user["org_slug"] == org_slug:
+            # their active org is gone from under them; land on another
+            self.switch_org(email, sorted(remaining)[0])
+
     def remove_user(self, email):
         """Delete a member: their logins, collector tokens and account. Their
         already-ingested usage stays in the org database."""
@@ -1493,15 +1510,18 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "remove-user":
                     if target == viewer["email"]:
                         raise ValueError("you cannot remove yourself")
-                    member = self.auth.get_user(target)
-                    if not member or member["org_slug"] != org:
+                    if not self.auth.get_user(target) or \
+                            org not in self.auth.memberships(target):
                         raise ValueError("that person is not in this organization")
-                    self.auth.remove_user(target)
+                    # an org admin's writ ends at their own org: removal here
+                    # strips THIS membership; the account itself dies only
+                    # when this was its last org
+                    self.auth.remove_from_org(target, org)
                     self._json({"ok": True})
 
                 elif action == "set-admin":
-                    member = self.auth.get_user(target)
-                    if not member or member["org_slug"] != org:
+                    if not self.auth.get_user(target) or \
+                            org not in self.auth.memberships(target):
                         raise ValueError("that person is not in this organization")
                     on = bool(body.get("admin"))
                     # an org with no admin can never be managed again
