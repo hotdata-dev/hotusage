@@ -550,7 +550,8 @@ function renderSessions(container, sessions) {
       el('div', { class: 'meta', text: meta })));
 
     const models = (s.models || []).map(shortModel);
-    tr.append(el('td', { class: 'models', text: models.join(', ') || '\u2014', title: models.join(', ') }));
+    tr.append(el('td', null,
+      el('div', { class: 'models', text: models.join(', ') || '\u2014', title: models.join(', ') })));
 
     // composition bar: share of the session by token type (magnitude lives in the columns)
     const bar = el('div', { class: 'minibar', role: 'img', 'aria-label': `${fmtMetricExact(sessionTotal(s))} total` });
@@ -599,7 +600,14 @@ function renderSessions(container, sessions) {
 }
 
 function buildPager(pages, start, shown, total) {
-  const go = (p) => { state.page = p; state.expanded = null; render(); };
+  const go = (p) => {
+    state.page = p;
+    // the row toggle keeps #s= and state.expanded in sync; collapsing here must too,
+    // or a later load() would restore the old id from the hash and yank the page back
+    state.expanded = null;
+    history.replaceState(null, '', location.pathname);
+    render();
+  };
   const bar = el('div', { class: 'pager' });
   bar.append(el('span', { class: 'flabel', text: `${start + 1}\u2013${start + shown} of ${total}` }));
   bar.append(el('span', { class: 'spacer' }));
