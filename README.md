@@ -106,10 +106,16 @@ as that account no matter what address the payload claims. The shared
 `HOTUSAGE_INGEST_TOKEN` still works for existing installs, but it only admits —
 anyone holding it can report as any registered colleague — so prefer sign-in.
 
+**Sign Out** in the collector's menu (or `hotusage-collector signout`) revokes
+that machine's token and clears it locally; other machines stay signed in.
+
 ```bash
-.venv/bin/python server/server.py listtokens            # who is signed in, from where
+.venv/bin/python server/server.py listtokens            # who is signed in, from where, last used
 .venv/bin/python server/server.py revoketoken <token>   # or: --user <email> for all of theirs
 ```
+
+`last used` is refreshed at most hourly per token — enough to spot a machine
+that has stopped reporting, without a write on every ingest.
 
 ## Managing users
 
