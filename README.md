@@ -175,6 +175,11 @@ org database.
 - **Health.** `/api/status` (authenticated) returns the viewer's org database
   id. Server logs (stdout) show every ingest with its routed org and any
   hotdata errors.
+- **Dashboard payload.** `/api/data` returns the org's sessions and daily
+  rows in one response (a few MB of JSON at ~4k sessions). It is gzipped
+  (~5x smaller) and the encoded bytes are cached per viewer beside the rows,
+  so a warm load is a dict lookup. Nothing in front of the server compresses
+  for us: the App Runner hostnames are DNS-only, not proxied.
 - **Cold starts.** Each org database has its own query worker that scales to
   zero; the first dashboard load or ingest for an idle org takes ~10-20s while
   it wakes. Normal, not a hang.
