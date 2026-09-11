@@ -122,7 +122,8 @@ TABLES = {
     "collector_tokens": {
         "key": ["token"],
         "cols": [("token", "VARCHAR"), ("user_email", "VARCHAR"),
-                 ("hostname", "VARCHAR"), ("created_at", "TIMESTAMPTZ")],
+                 ("hostname", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
+                 ("last_used_at", "TIMESTAMPTZ")],
     },
 }
 
@@ -606,6 +607,7 @@ class AuthStore:
         self.sysdb.load("collector_tokens", [{
             "token": token, "user_email": email, "hostname": row["hostname"],
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_used_at": None,
         }], "upsert")
         self.sysdb.load("device_codes", [{**row, "approved_email": email,
                                           "collector_token": token,
@@ -624,16 +626,66 @@ class AuthStore:
         self.sysdb.load("device_codes", [{"device_code": row["device_code"]}], "delete")
         return row["approved_email"], row["collector_token"]
 
+    def revoke_collector_token(self, token):
+        """Sign out one collector. Returns the address it belonged to."""
+        email = self.collector_token_user(token)
+        if not email:
+            return None
+        self.sysdb.load("collector_tokens", [{"token": token}], "delete")
+        return email
+
+    # An admin wants to know which machines are still reporting, but a write
+    # per ingest would be absurd, so the stamp is refreshed at most hourly.
+    LAST_USED_RESOLUTION = 3600
+
     def collector_token_user(self, token):
         """The account a collector token belongs to, or None."""
         if not token or not re.match(r"^[A-Za-z0-9_-]{20,64}$", token):
             return None
-        rows = self.sysdb.rows(f"SELECT token, user_email, hostname, created_at "
-                               f"FROM {SYS}.public.collector_tokens "
+        rows = self.sysdb.rows(f"SELECT token, user_email, hostname, created_at, "
+                               f"last_used_at FROM {SYS}.public.collector_tokens "
                                f"WHERE token = {sql_str(token)}")
         if not rows:
             return None
-        return rows[0]["user_email"]
+        row = rows[0]
+        try:
+            self._touch_token(row)
+        except Exception as e:
+            print(f"warn: last_used_at: {e}", file=sys.stderr)
+        return row["user_email"]
+
+    @staticmethod
+    def _age_seconds(value):
+        """Seconds since `value`, which the store hands back as a datetime
+        (aware or naive) or a string. None when it cannot be read as a time --
+        the caller then treats the stamp as stale, which is the safe way to be
+        wrong about a usage timestamp."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        if not isinstance(value, datetime):
+            return None
+        now = datetime.now(timezone.utc)
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return (now - value).total_seconds()
+
+    def _touch_token(self, row):
+        age = self._age_seconds(row.get("last_used_at"))
+        if age is not None and age < self.LAST_USED_RESOLUTION:
+            return
+        try:
+            self.sysdb.load("collector_tokens", [{
+                "token": row["token"], "user_email": row["user_email"],
+                "hostname": row["hostname"], "created_at": str(row["created_at"]),
+                "last_used_at": datetime.now(timezone.utc).isoformat(),
+            }], "upsert")
+        except Exception as e:  # never fail an ingest over a usage stamp
+            print(f"warn: last_used_at update: {e}", file=sys.stderr)
 
     def seed(self):
         """First boot: system tables; org hotdata (with its dedicated database)
@@ -1017,6 +1069,22 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"error: /api/device/start: {e}", file=sys.stderr)
                 self._json({"error": "could not start sign-in"}, 500)
             return
+        if path == "/api/collector/signout":
+            try:
+                auth = self.headers.get("Authorization", "")
+                presented = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+                email = self.auth.revoke_collector_token(presented)
+                if not email:
+                    # already gone, or a shared token that owns no row: the
+                    # collector is signed out either way, so do not fail it
+                    self._json({"ok": True, "revoked": False})
+                    return
+                print(f"signout: collector token for {email} revoked")
+                self._json({"ok": True, "revoked": True, "user_email": email})
+            except Exception as e:
+                print(f"error: /api/collector/signout: {e}", file=sys.stderr)
+                self._json({"error": "could not sign out"}, 500)
+            return
         if path == "/api/device/poll":
             try:
                 length = int(self.headers.get("Content-Length", 0))
@@ -1397,11 +1465,12 @@ def user_admin_cli(argv):
 
     elif verb == "listtokens":
         toks = auth.sysdb.rows(
-            f"SELECT token, user_email, hostname, created_at "
+            f"SELECT token, user_email, hostname, created_at, last_used_at "
             f"FROM {SYS}.public.collector_tokens ORDER BY user_email, created_at")
         for t in toks:
-            print(f"{t['user_email']:<32} {t['hostname'] or '?':<24} "
-                  f"since {str(t['created_at'])[:10]}  {t['token']}")
+            used = str(t["last_used_at"])[:16] if t["last_used_at"] else "never"
+            print(f"{t['user_email']:<32} {t['hostname'] or '?':<20} "
+                  f"since {str(t['created_at'])[:10]}  last used {used:<16}  {t['token']}")
         if not toks:
             print("no collector tokens (nobody has signed in a collector yet)")
 
