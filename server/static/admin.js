@@ -200,6 +200,7 @@ $('#orgCreate').addEventListener('click', () => act(async () => {
     owner_email: $('#newOrgOwner').value.trim(),
   });
   $('#newOrgName').value = ''; $('#newOrgOwner').value = '';
+  $('#orgLinkOut').hidden = true;  // never show a previous org's link
   if (r.invite_link) {
     $('#orgLinkValue').value = r.invite_link;
     $('#orgLinkValue').title = 'send this to the owner; they join as the org admin';

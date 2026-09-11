@@ -351,15 +351,20 @@ class AuthStore:
         if self.get_user(email):
             raise ValueError(f"user {email} already exists")
         self.ensure_org(org_slug)
-        first_admin = not self.admins(org_slug)
+        # only the FIRST member: an org that has members but lost its admin
+        # must not hand admin (and everyone's data) to whoever joins next --
+        # that recovery is an explicit makeadmin, not an accident
+        first_member = not self.sysdb.rows(
+            f"SELECT email FROM {SYS}.public.users "
+            f"WHERE org_slug = {sql_str(org_slug)} LIMIT 1")
         self.sysdb.load("users", [{"email": email, "password_hash": hash_password(password),
                                    "org_slug": org_slug,
                                    "created_at": datetime.now(timezone.utc).isoformat()}],
                         "upsert")
         # an org someone can join but nobody can manage is a dead end, so the
-        # first member of an admin-less org (UI-created, or CLI addorg)
-        # becomes its admin
-        if first_admin:
+        # first member of an empty org (UI-created, or CLI addorg) becomes
+        # its admin
+        if first_member:
             self.set_admin(email, org_slug)
         with self.lock:
             self.route_cache.pop(email, None)
@@ -624,6 +629,9 @@ class AuthStore:
         user = self.get_user(email)
         if user:
             self.set_admin(email, user["org_slug"], False)
+        # and the platform grant: otherwise whoever re-registers this address
+        # at the public /register endpoint inherits system admin
+        self.set_system_admin(email, False)
         self.sysdb.load("users", [{"email": email}], "delete")
         with self.lock:
             self.route_cache.pop(email, None)
@@ -1357,9 +1365,14 @@ class Handler(BaseHTTPRequestHandler):
                         self._json({"error": "only a system admin can manage organizations"}, 403)
                         return
                     if action == "create-org":
+                        owner = (body.get("owner_email") or "").strip().lower()
+                        if owner:  # refuse before the database exists
+                            if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", owner):
+                                raise ValueError("that does not look like an email address")
+                            if self.auth.get_user(owner):
+                                raise ValueError("that email is already registered")
                         slug = self.auth.create_org(body.get("name", ""))
                         out = {"ok": True, "slug": slug}
-                        owner = (body.get("owner_email") or "").strip().lower()
                         if owner:
                             # a single-use invite whose acceptor, being the
                             # org's first member, becomes its admin
@@ -1850,6 +1863,7 @@ def user_admin_cli(argv):
             drop_usage_rows(auth, toks)
         if user:
             auth.set_admin(email, user["org_slug"], False)
+        auth.set_system_admin(email, False)
         auth.sysdb.load("users", [{"email": email}], "delete")
         print(f"deleted {email} ({len(toks)} collector token(s) revoked; their "
               f"already-ingested usage stays in the org database)")

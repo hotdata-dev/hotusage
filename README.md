@@ -95,8 +95,9 @@ so it is a platform power, not an org power. System admins get an **All
 organizations** card on `/admin`: every org with member counts, a create form
 (optionally with an owner email — that mints a single-use invite whose
 acceptor, as the org's first member, becomes its admin), and delete for empty
-orgs (the database is kept; destroying data stays CLI-only). The first member
-of any admin-less org becomes its admin automatically.
+orgs (the database is kept; destroying data stays CLI-only). The first member of an
+empty org becomes its admin automatically; an org that loses its last admin
+is recovered with `makeadmin`, never by whoever joins next.
 
 ```bash
 .venv/bin/python server/server.py makesysadmin eddie@hotdata.dev
