@@ -132,6 +132,18 @@ table.data tbody tr.sess:focus-visible td { background: var(--page); outline: no
 .minibar { display: flex; height: 10px; width: 140px; border-radius: 3px; overflow: hidden; background: transparent; }
 .minibar span { height: 100%; }
 .minibar span + span { margin-left: 2px; }
+.sess .models { color: var(--ink-2); font-size: 12px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.pager { display: flex; align-items: center; gap: 10px; padding: 10px 2px 2px; }
+.pager .spacer { flex: 1; }
+.pager .flabel { color: var(--muted); font-size: 12px; }
+.pager button {
+  background: var(--surface); color: var(--ink-2);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 4px 12px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.pager button:hover:not(:disabled) { color: var(--ink); }
+.pager button:disabled { opacity: 0.45; cursor: default; }
 .detailrow > td { background: var(--page); padding: 14px 16px; }
 .detailrow h3 { font-size: 13px; font-weight: 650; margin: 0 0 6px; }
 .detailrow .dmeta { color: var(--ink-2); font-size: 12px; margin-bottom: 10px; }

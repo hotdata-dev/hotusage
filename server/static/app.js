@@ -22,6 +22,7 @@ const state = {
   loadedDays: 30,     // what the server has actually sent us so far
   metric: 'tok',
   sort: { key: 'end', dir: -1 },
+  page: 0,            // sessions table page (PAGE_SIZE rows each)
   expanded: null,
   dailyView: 'chart',
   detailView: 'chart',
@@ -481,8 +482,11 @@ function renderDetailTable(container, points) {
 // ---------------------------------------------------------------------------
 // Sessions table
 // ---------------------------------------------------------------------------
+const PAGE_SIZE = 100;
+
 const COLS = [
   { key: 'title',    label: 'Session' },
+  { key: 'models',   label: 'Model',        sortKey: 'models' },
   { key: 'bar',      label: 'Mix' },
   { key: 'requests', label: 'Requests',     num: true, sortKey: 'requests' },
   { key: 'out',      label: 'Output',       num: true, sortKey: 'out' },
@@ -494,6 +498,7 @@ const COLS = [
 function sortVal(s, key) {
   if (key === 'total') return sessionTotal(s);
   if (key === 'end') return s.end || '';
+  if (key === 'models') return (s.models || []).map(shortModel).sort().join(', ');
   return s[key] || 0;
 }
 
@@ -514,6 +519,7 @@ function renderSessions(container, sessions) {
       if (state.sort.key === c.sortKey) th.append(el('span', { class: 'arrow', text: state.sort.dir < 0 ? '▼' : '▲' }));
       th.addEventListener('click', () => {
         state.sort = { key: c.sortKey, dir: state.sort.key === c.sortKey ? -state.sort.dir : -1 };
+        state.page = 0;
         render();
       });
     }
@@ -521,8 +527,16 @@ function renderSessions(container, sessions) {
   }
   table.append(el('thead', null, trh));
 
+  // an expanded session (deep link or a sort change) must stay visible
+  const expandedAt = state.expanded ? sorted.findIndex((s) => s.id === state.expanded) : -1;
+  const pages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  if (expandedAt >= 0) state.page = Math.floor(expandedAt / PAGE_SIZE);
+  state.page = Math.min(Math.max(0, state.page), pages - 1);
+  const start = state.page * PAGE_SIZE;
+  const pageRows = sorted.slice(start, start + PAGE_SIZE);
+
   const tb = el('tbody');
-  for (const s of sorted) {
+  for (const s of pageRows) {
     const tr = el('tr', { class: 'sess', tabindex: '0' });
     const meta = [
       s.user,
@@ -530,11 +544,14 @@ function renderSessions(container, sessions) {
       s.project,
       dayLabel(localDay(new Date(s.start))),
       durationLabel(s.start, s.end),
-      s.models.map(shortModel).join(', '),
     ].filter(Boolean).join(' · ');
     tr.append(el('td', null,
       el('div', { class: 'title', text: s.title }),
       el('div', { class: 'meta', text: meta })));
+
+    const models = (s.models || []).map(shortModel);
+    tr.append(el('td', null,
+      el('div', { class: 'models', text: models.join(', ') || '\u2014', title: models.join(', ') })));
 
     // composition bar: share of the session by token type (magnitude lives in the columns)
     const bar = el('div', { class: 'minibar', role: 'img', 'aria-label': `${fmtMetricExact(sessionTotal(s))} total` });
@@ -579,6 +596,29 @@ function renderSessions(container, sessions) {
   scroller.style.overflowX = 'auto';
   scroller.append(table);
   container.append(scroller);
+  if (pages > 1) container.append(buildPager(pages, start, pageRows.length, sorted.length));
+}
+
+function buildPager(pages, start, shown, total) {
+  const go = (p) => {
+    state.page = p;
+    // the row toggle keeps #s= and state.expanded in sync; collapsing here must too,
+    // or a later load() would restore the old id from the hash and yank the page back
+    state.expanded = null;
+    history.replaceState(null, '', location.pathname);
+    render();
+  };
+  const bar = el('div', { class: 'pager' });
+  bar.append(el('span', { class: 'flabel', text: `${start + 1}\u2013${start + shown} of ${total}` }));
+  bar.append(el('span', { class: 'spacer' }));
+  const prev = el('button', { type: 'button', text: 'Previous', onclick: () => go(state.page - 1) });
+  prev.disabled = state.page === 0;
+  bar.append(prev);
+  bar.append(el('span', { class: 'flabel', text: `Page ${state.page + 1} of ${pages}` }));
+  const next = el('button', { type: 'button', text: 'Next', onclick: () => go(state.page + 1) });
+  next.disabled = state.page >= pages - 1;
+  bar.append(next);
+  return bar;
 }
 
 function buildDetailRow(s) {
@@ -700,6 +740,7 @@ function wireSeg(id, attr, apply) {
     const btn = e.target.closest('button');
     if (!btn) return;
     for (const b of seg.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b === btn));
+    state.page = 0;
     apply(btn.dataset[attr]);
     render();
   });
@@ -717,7 +758,7 @@ function populateProjects() {
   for (const [name, n] of opts) sel.append(el('option', { value: name, text: `${name} (${n})` }));
   if (![...counts.keys()].includes(state.project)) state.project = 'all';
   sel.value = state.project;
-  sel.onchange = () => { state.project = sel.value; render(); };
+  sel.onchange = () => { state.project = sel.value; state.page = 0; render(); };
 }
 
 function populateUsers() {
@@ -732,7 +773,7 @@ function populateUsers() {
   for (const [name, n] of opts) sel.append(el('option', { value: name, text: `${name} (${n})` }));
   if (![...counts.keys()].includes(state.user)) state.user = 'all';
   sel.value = state.user;
-  sel.onchange = () => { state.user = sel.value; render(); };
+  sel.onchange = () => { state.user = sel.value; state.page = 0; render(); };
   // hide the filter until more than one user reports in
   const show = counts.size > 1;
   sel.style.display = show ? '' : 'none';
