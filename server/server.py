@@ -634,21 +634,37 @@ class AuthStore:
             self.sysdb.load("system_admins", [{"email": email}], "delete")
 
     def all_orgs(self):
-        """One read per table rather than two per org. A member count is the
-        size of the union of users and org_memberships for that slug, and two
-        full reads answer that for every org at once -- the per-org fan-out
-        this replaced cost 2N+1 round trips, so the page slowed down as the
-        platform grew."""
+        """Two reads, whatever the platform holds. A member count is the size
+        of the union of users and org_memberships for that slug, which the
+        engine can group into one row per org -- the per-org fan-out this
+        replaced cost 2N+1 round trips, and pulling the two tables back whole
+        would have cost a round trip per result page of *users*, since sql()
+        pages through truncated results."""
+        counted = (f"SELECT org_slug, COUNT(DISTINCT email) AS members FROM ("
+                   f"SELECT org_slug, email FROM {SYS}.public.users "
+                   f"UNION SELECT org_slug, email FROM {SYS}.public.org_memberships"
+                   f") AS u GROUP BY org_slug")
         got = gather(
             orgs=lambda: self.sysdb.rows(f"SELECT slug, name, database_id, created_at "
                                          f"FROM {SYS}.public.orgs ORDER BY created_at"),
+            counts=lambda: self.sysdb.rows(counted))
+        counts = {r["org_slug"]: int(r["members"]) for r in got["counts"]}
+        if not counts and got["orgs"]:
+            # rows() turns a declared-but-empty table into an empty result, and
+            # one query spanning both tables cannot degrade per table -- so an
+            # empty org_memberships would zero every count. Re-read separately.
+            counts = self._counts_from_full_reads()
+        return [{**o, "members": counts.get(o["slug"], 0)} for o in got["orgs"]]
+
+    def _counts_from_full_reads(self):
+        both = gather(
             active=lambda: self.sysdb.rows(f"SELECT org_slug, email FROM {SYS}.public.users"),
             joined=lambda: self.sysdb.rows(f"SELECT org_slug, email "
                                            f"FROM {SYS}.public.org_memberships"))
         by_slug = {}
-        for r in got["active"] + got["joined"]:
+        for r in both["active"] + both["joined"]:
             by_slug.setdefault(r["org_slug"], set()).add(r["email"])
-        return [{**o, "members": len(by_slug.get(o["slug"], ()))} for o in got["orgs"]]
+        return {slug: len(emails) for slug, emails in by_slug.items()}
 
     def create_org(self, name):
         """Platform-side org creation: provision the database, no first user.
