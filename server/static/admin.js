@@ -6,6 +6,9 @@
 // /api/admin/state returns for the logged-in viewer.
 // ---------------------------------------------------------------------------
 const $ = (sel) => document.querySelector(sel);
+// Table headers and placeholder rows are in admin.html so the page has its
+// layout before /api/admin/state answers; every render only swaps the body.
+const tbody = (sel) => document.querySelector(sel + ' tbody');
 
 function el(tag, attrs, ...children) {
   const n = document.createElement(tag);
@@ -21,10 +24,19 @@ function el(tag, attrs, ...children) {
 
 let state = null;
 
+// Placeholder rows are dropped the moment the answer lands or fails -- never
+// left animating under an error banner. Removing only the placeholders (rather
+// than emptying the bodies) keeps rendered data intact when a later action
+// fails.
+function clearPlaceholders() {
+  for (const r of document.querySelectorAll('.admintable tr.placeholder')) r.remove();
+}
+
 function showError(msg) {
   const box = $('#err');
   box.textContent = msg;
   box.hidden = !msg;
+  if (msg) clearPlaceholders();
 }
 
 async function api(path, body) {
@@ -58,12 +70,9 @@ async function act(fn) {
 }
 
 function renderMembers() {
-  const t = $('#members');
+  const t = tbody('#members');
   t.replaceChildren();
   const admin = state.viewer.isAdmin;
-  t.append(el('tr', { class: 'head' },
-    el('th', { text: 'Member' }), el('th', { text: 'Role' }),
-    el('th', { text: 'Joined' }), el('th', { text: '' })));
   for (const m of state.members) {
     const self = m.email === state.viewer.email;
     const controls = el('div', { class: 'rowactions' });
@@ -90,12 +99,9 @@ function renderMembers() {
 }
 
 function renderInvites() {
-  const t = $('#invites');
+  const t = tbody('#invites');
   t.replaceChildren();
   const invites = state.invites || [];
-  t.append(el('tr', { class: 'head' },
-    el('th', { text: 'Invite' }), el('th', { text: 'Kind' }),
-    el('th', { text: 'Uses' }), el('th', { text: 'Expires' }), el('th', { text: '' })));
   if (!invites.length) {
     t.append(row('No pending invites', '', '', '', ''));
     return;
@@ -113,12 +119,9 @@ function renderInvites() {
 }
 
 function renderCollectors() {
-  const t = $('#collectors');
+  const t = tbody('#collectors');
   t.replaceChildren();
   const rows = state.collectors || [];
-  t.append(el('tr', { class: 'head' },
-    el('th', { text: 'Member' }), el('th', { text: 'Machine' }),
-    el('th', { text: 'Signed in' }), el('th', { text: 'Last sync' }), el('th', { text: '' })));
   if (!rows.length) {
     t.append(row('Nobody has signed in a collector yet', '', '', '', ''));
     return;
@@ -141,12 +144,9 @@ function showLink(link, note) {
 }
 
 function renderOrgs() {
-  const t = $('#orgs');
+  const t = tbody('#orgs');
   t.replaceChildren();
   const orgs = state.allOrgs || [];
-  t.append(el('tr', { class: 'head' },
-    el('th', { text: 'Organization' }), el('th', { text: 'Slug' }),
-    el('th', { text: 'Members' }), el('th', { text: 'Created' }), el('th', { text: '' })));
   for (const o of orgs) {
     const controls = el('div', { class: 'rowactions' });
     if (!o.members && o.slug !== state.org.slug) {
@@ -163,6 +163,7 @@ function renderOrgs() {
 
 async function load() {
   state = await api('/api/admin/state');
+  clearPlaceholders();  // anything that throws below must not leave them pulsing
   window.setViewer(state.viewer.email, state.org.name);
   $('#orgName').value = state.org.name;
   $('#orgMeta').textContent = `slug ${state.org.slug} - database ${state.org.database || 'none'}`;
