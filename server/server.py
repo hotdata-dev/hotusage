@@ -634,11 +634,21 @@ class AuthStore:
             self.sysdb.load("system_admins", [{"email": email}], "delete")
 
     def all_orgs(self):
-        orgs = self.sysdb.rows(f"SELECT slug, name, database_id, created_at "
-                               f"FROM {SYS}.public.orgs ORDER BY created_at")
-        counts = gather({o["slug"]: (lambda slug=o["slug"]: len(self._member_rows(slug)))
-                         for o in orgs})
-        return [{**o, "members": counts[o["slug"]]} for o in orgs]
+        """One read per table rather than two per org. A member count is the
+        size of the union of users and org_memberships for that slug, and two
+        full reads answer that for every org at once -- the per-org fan-out
+        this replaced cost 2N+1 round trips, so the page slowed down as the
+        platform grew."""
+        got = gather(
+            orgs=lambda: self.sysdb.rows(f"SELECT slug, name, database_id, created_at "
+                                         f"FROM {SYS}.public.orgs ORDER BY created_at"),
+            active=lambda: self.sysdb.rows(f"SELECT org_slug, email FROM {SYS}.public.users"),
+            joined=lambda: self.sysdb.rows(f"SELECT org_slug, email "
+                                           f"FROM {SYS}.public.org_memberships"))
+        by_slug = {}
+        for r in got["active"] + got["joined"]:
+            by_slug.setdefault(r["org_slug"], set()).add(r["email"])
+        return [{**o, "members": len(by_slug.get(o["slug"], ()))} for o in got["orgs"]]
 
     def create_org(self, name):
         """Platform-side org creation: provision the database, no first user.
@@ -695,10 +705,17 @@ class AuthStore:
                             [{"org_slug": org_slug, "email": email}], "delete")
 
     def _member_rows(self, org_slug):
-        """Union of membership rows and active-org rows. Accounts predating
+        return self._roster(org_slug)[0]
+
+    def _roster(self, org_slug):
+        """(member rows, emails ACTIVE in the org) from one pair of reads.
+
+        Union of membership rows and active-org rows. Accounts predating
         org_memberships exist only in users, and the lazy backfill writes one
         row per user on their own read -- so neither table alone is the org's
-        roster until every member has loaded a page."""
+        roster until every member has loaded a page. The active set is handed
+        back because collector listing needs exactly that distinction, which
+        the merge below throws away."""
         both = gather(
             active=lambda: self.sysdb.rows(
                 f"SELECT email, created_at FROM {SYS}.public.users "
@@ -709,14 +726,23 @@ class AuthStore:
         merged = {r["email"]: r for r in both["active"]}
         for r in both["joined"]:
             merged.setdefault(r["email"], r)
-        return sorted(merged.values(), key=lambda r: (str(r["created_at"]), r["email"]))
+        rows = sorted(merged.values(), key=lambda r: (str(r["created_at"]), r["email"]))
+        return rows, {r["email"] for r in both["active"]}
+
+    def roster(self, org_slug):
+        """Everything the admin page needs about who belongs to an org, from
+        one wave of reads: the members, the org's admin set (so the viewer's
+        own is_admin needs no second org_admins lookup) and the active emails
+        (so org_collectors needs no second users lookup)."""
+        got = gather(admins=lambda: self.admins(org_slug),
+                     roster=lambda: self._roster(org_slug))
+        rows, active = got["roster"]
+        return {"members": [{**r, "is_admin": r["email"] in got["admins"]} for r in rows],
+                "admins": got["admins"], "active": active}
 
     def members(self, org_slug):
         """Everyone who belongs to the org (active there or not)."""
-        got = gather(admins=lambda: self.admins(org_slug),
-                     rows=lambda: self._member_rows(org_slug))
-        return [{**r, "is_admin": r["email"] in got["admins"]}
-                for r in got["rows"]]
+        return self.roster(org_slug)["members"]
 
     def remove_from_org(self, email, org_slug):
         """Remove one membership. The account (logins, collectors) survives
@@ -812,13 +838,15 @@ class AuthStore:
         now = time.time()
         return [i for i in invites if float(i["expires_at"]) > now]
 
-    def org_collectors(self, org_slug):
+    def org_collectors(self, org_slug, active=None):
         # ACTIVE members only: a collector routes ingest to its owner's active
         # org, so a member active elsewhere reports elsewhere -- listing their
-        # token here would expose a credential this org cannot even revoke
-        emails = [r["email"] for r in self.sysdb.rows(
-            f"SELECT email FROM {SYS}.public.users "
-            f"WHERE org_slug = {sql_str(org_slug)}")]
+        # token here would expose a credential this org cannot even revoke.
+        # `active` is that same set, when the caller has already read it.
+        emails = sorted(active) if active is not None else [
+            r["email"] for r in self.sysdb.rows(
+                f"SELECT email FROM {SYS}.public.users "
+                f"WHERE org_slug = {sql_str(org_slug)}")]
         if not emails:
             return []
         wanted = ", ".join(sql_str(e) for e in emails)
@@ -1887,20 +1915,24 @@ class Handler(BaseHTTPRequestHandler):
                 org, email = viewer["org_slug"], viewer["email"]
                 # the privileged reads stay behind the role checks, so this is
                 # two waves rather than one: what the viewer may see first,
-                # then the reads that answer depends on it
-                who = gather(is_admin=lambda: self.auth.is_admin(email, org),
-                             is_sysadmin=lambda: self.auth.is_system_admin(email),
-                             members=lambda: self.auth.members(org))
+                # then the reads that answer depends on it. Wave one is a
+                # roster read, which already carries the admin set and the
+                # active emails that wave two would otherwise re-query.
+                who = gather(is_sysadmin=lambda: self.auth.is_system_admin(email),
+                             roster=lambda: self.auth.roster(org))
+                roster = who["roster"]
+                is_admin = email in roster["admins"]
                 payload = {
-                    "viewer": {"email": email, "isAdmin": who["is_admin"]},
+                    "viewer": {"email": email, "isAdmin": is_admin},
                     "org": {"slug": org, "name": viewer["org_name"],
                             "database": viewer.get("database_id")},
-                    "members": who["members"],
+                    "members": roster["members"],
                 }
                 extra = {}
-                if who["is_admin"]:  # invite tokens are credentials: admins only
+                if is_admin:  # invite tokens are credentials: admins only
                     extra["invites"] = lambda: self.auth.org_invites(org)
-                    extra["collectors"] = lambda: self.auth.org_collectors(org)
+                    extra["collectors"] = lambda: self.auth.org_collectors(
+                        org, active=roster["active"])
                 if who["is_sysadmin"]:
                     extra["allOrgs"] = lambda: self.auth.all_orgs()
                     payload["viewer"]["isSystemAdmin"] = True
