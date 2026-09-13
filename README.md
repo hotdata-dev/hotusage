@@ -45,14 +45,26 @@ generated initial password once.
 
 ## Self-serve registration and invites
 
-Anyone can create an organization at `/register` (linked from the login page):
-org name + email + password provisions the org's dedicated database and signs
-them in. Slugs are derived from the org name; a taken slug is refused —
-joining an existing org goes through invites, never through guessing its slug.
+Signing up is two steps, and the account is the first one. `/register` (linked
+from the login page) takes an email and a password and creates the account
+alone — no org, no database. Signed in but belonging to nowhere, you land on
+`/setup`, which asks for an organization name and provisions its dedicated
+database; you become its first member and its admin.
+
+Splitting it that way means a failure while provisioning costs a database, not
+a signup, and that someone invited to an existing org never creates one at all:
+opening an invite link adds the account to that org and `/setup` stops asking.
+Every page that reads or writes org data redirects there until an org exists
+(the API answers 409), so there is no half-signed-in state to handle.
+
+Slugs are derived from the org name; a taken slug is refused — joining an
+existing org goes through invites, never through guessing its slug.
 
 Admins grow an org from the **Organization** page, which mints two kinds of
 link. Nothing is emailed yet — you share the link yourself. Unauthenticated
-register/invite endpoints are rate limited (5/hour per IP).
+register/invite endpoints are rate limited (5/hour per IP), and org creation
+has its own bucket so a team behind one NAT does not spend the registration
+budget on it.
 
 - **Single-use invite** — enter one teammate's email; the link is bound to
   that address and valid 7 days. It dies the moment it is used.

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hotusage - create an organization</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.svg">
+  <link rel="stylesheet" href="/static/auth.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="brandrow">
+        <img class="mark" src="/static/icon.svg" width="22" height="22" alt="">
+        <h1>hotusage</h1>
+      </div>
+      <div class="sub">Create your organization</div>
+      <div class="err" id="err">{{ERROR}}</div>
+
+      <p class="devtext">Your account <b>{{EMAIL}}</b> does not belong to an
+        organization yet. An organization owns its own database: your usage, and
+        your team's, is collected and read there.</p>
+
+      <form method="post" action="/setup">
+        <div class="field">
+          <label for="org_name">Organization name</label>
+          <input id="org_name" name="org_name" type="text" minlength="2" maxlength="60"
+                 placeholder="Acme Inc" required autofocus>
+        </div>
+        <button class="signin" type="submit">Create organization</button>
+      </form>
+
+      <div class="alt">Joining a team instead? Ask an admin there for an invite
+        link &mdash; opening it adds this account to their organization, and you
+        can skip this step.</div>
+      <div class="alt"><a href="/logout">Sign out</a></div>
+    </div>
+  </div>
+  <script>
+    var err = document.getElementById('err');
+    if (err.textContent.trim()) err.classList.add('show');
+  </script>
+</body>
+</html>

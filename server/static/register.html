@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>hotusage - create an organization</title>
+  <title>hotusage - create an account</title>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="/static/icon.svg">
   <link rel="stylesheet" href="/static/auth.css">
@@ -15,26 +15,24 @@
         <img class="mark" src="/static/icon.svg" width="22" height="22" alt="">
         <h1>hotusage</h1>
       </div>
-      <div class="sub">Create your organization</div>
+      <div class="sub">Create your account</div>
       <div class="err" id="err">{{ERROR}}</div>
       <form method="post" action="/register">
         <div class="field">
-          <label for="org_name">Organization name</label>
-          <input id="org_name" name="org_name" type="text" minlength="2" maxlength="60"
-                 placeholder="Acme Inc" required autofocus>
-        </div>
-        <div class="field">
           <label for="email">Email</label>
-          <input id="email" name="email" type="email" autocomplete="username" required>
+          <input id="email" name="email" type="email" autocomplete="username"
+                 required autofocus>
         </div>
         <div class="field">
           <label for="password">Password</label>
           <input id="password" name="password" type="password" minlength="8"
                  autocomplete="new-password" required>
         </div>
-        <button class="signin" type="submit">Create organization</button>
+        <button class="signin" type="submit">Create account</button>
       </form>
       <div class="alt">Already have an account? <a href="/login">Sign in</a></div>
+      <div class="alt">You will pick an organization next, or open an invite link
+        to join one that already exists.</div>
     </div>
   </div>
   <script>

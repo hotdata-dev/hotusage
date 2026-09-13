@@ -145,6 +145,125 @@ def test_success():
     print(f"    {previous} -> dbidbrandnew00000000000, three caches cleared")
 
 
+class StatefulSysDb:
+    """A system database that reads back what it wrote.
+
+    Enough of a SQL engine for the signup path: table name, equality filters,
+    and the one LEFT JOIN (users -> orgs) that get_user and user_for_token
+    rely on to hand back org_name and database_id.
+    """
+
+    KEYS = {"users": ("email",), "orgs": ("slug",), "org_admins": ("email", "org_slug"),
+            "org_memberships": ("email", "org_slug")}
+
+    def __init__(self, db="dbidsystem00000000000000"):
+        self.db = db
+        self.tables = {t: [] for t in self.KEYS}
+        self.lock = threading.Lock()
+        self.created = []
+
+    def rows(self, query):
+        import re
+        flat = " ".join(query.split())
+        table = re.search(r"FROM \S+\.public\.(\w+)", flat).group(1)
+        out = [dict(r) for r in self.tables[table]]
+        if table == "users" and "LEFT JOIN" in flat:   # get_user / user_for_token
+            by_slug = {o["slug"]: o for o in self.tables["orgs"]}
+            for r in out:
+                org = by_slug.get(r.get("org_slug"))
+                r["org_name"] = org["name"] if org else None
+                r["database_id"] = org["database_id"] if org else None
+        for col, val in re.findall(r"([\w.]+) = '([^']*)'", flat):
+            col = col.split(".")[-1]
+            out = [r for r in out if str(r.get(col, "")) == val]
+        return out
+
+    def load(self, table, rows, mode):
+        for r in rows:
+            key = self.KEYS[table]
+            self.tables[table] = [x for x in self.tables[table]
+                                  if tuple(x.get(k) for k in key) != tuple(r.get(k) for k in key)]
+            if mode != "delete":
+                self.tables[table].append(dict(r))
+
+    def create_org_database(self, slug):
+        db = "dbid" + "".join(c for c in slug if c.isalnum()).ljust(14, "0")
+        self.created.append(db)
+        return db
+
+
+def signup_store():
+    db = StatefulSysDb()
+    return server.AuthStore(db, FakePool()), db
+
+
+def test_register_creates_an_account_with_no_org():
+    print("registration creates the account alone:")
+    auth, db = signup_store()
+    auth.create_account("Ada@x.dev", "hunter2hunter2")
+    user, = db.tables["users"]
+    assert user["email"] == "ada@x.dev", user       # normalised
+    assert user["org_slug"] == "", user             # no org, by design
+    assert db.tables["orgs"] == [], "registration must provision no database"
+    assert db.tables["org_memberships"] == [] and db.tables["org_admins"] == []
+    assert db.created == [], db.created
+    print("    ada@x.dev, org_slug='', no database provisioned")
+
+    # an org-less account has nothing to backfill, and "" is not a membership
+    assert auth.memberships("ada@x.dev") == set()
+    assert db.tables["org_memberships"] == [], db.tables["org_memberships"]
+    # ingest has nowhere to route until they have one
+    assert auth.route_for_email("ada@x.dev") is None
+    print("    no membership backfilled, ingest has no route")
+
+    refuses(lambda: auth.create_account("ada@x.dev", "otherpassword"),
+            "already registered")
+
+
+def test_org_step_makes_them_first_member_and_admin():
+    print("the org step, taken after the account exists:")
+    auth, db = signup_store()
+    auth.create_account("ada@x.dev", "hunter2hunter2")
+    slug = auth.create_org_for("ada@x.dev", "Acme Inc")
+    assert slug == "acme-inc", slug
+    assert db.tables["orgs"][0]["database_id"] == "dbidacmeinc0000000", db.tables["orgs"]
+    assert [m["org_slug"] for m in db.tables["org_memberships"]] == ["acme-inc"]
+    assert [a["email"] for a in db.tables["org_admins"]] == ["ada@x.dev"]
+    assert db.tables["users"][0]["org_slug"] == "acme-inc", "it must become active"
+    assert auth.route_for_email("ada@x.dev") == ("acme-inc", "dbidacmeinc0000000")
+    print(f"    {slug}: database provisioned, member, admin, active, routable")
+
+
+def test_org_step_refusals():
+    print("the org step refuses:")
+    auth, db = signup_store()
+    auth.create_account("ada@x.dev", "hunter2hunter2")
+    for bad in ("", "a", "   ", "!!"):
+        refuses(lambda b=bad: auth.create_org_for("ada@x.dev", b), "at least 2")
+    refuses(lambda: auth.create_org_for("nobody@x.dev", "Ghost Co"), "no such user")
+    auth.create_org_for("ada@x.dev", "Acme Inc")
+    auth.create_account("bob@x.dev", "hunter2hunter2")
+    # joining an existing org goes through an invite, never through its name
+    refuses(lambda: auth.create_org_for("bob@x.dev", "Acme Inc"), "already exists")
+
+
+def test_joining_an_org_does_not_grant_admin():
+    """Also the invite path for an org-less account: both accept_invite
+    branches funnel an existing account through join_org."""
+    print("a second member joins without becoming an admin:")
+    auth, db = signup_store()
+    auth.create_account("ada@x.dev", "hunter2hunter2")
+    auth.create_org_for("ada@x.dev", "Acme Inc")
+    auth.create_account("bob@x.dev", "hunter2hunter2")
+    auth.join_org("bob@x.dev", "acme-inc")
+    assert sorted(a["email"] for a in db.tables["org_admins"]) == ["ada@x.dev"]
+    bob = [u for u in db.tables["users"] if u["email"] == "bob@x.dev"][0]
+    assert bob["org_slug"] == "acme-inc", bob
+    assert auth.memberships("bob@x.dev") == {"acme-inc"}
+    print("    bob is a member, admins unchanged:",
+          [a["email"] for a in db.tables["org_admins"]])
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

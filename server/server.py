@@ -490,24 +490,53 @@ class AuthStore:
 
     INVITE_TTL = 7 * 24 * 3600
 
-    def register_org(self, org_name, slug, email, password):
-        """Self-serve signup: a NEW org (provisioning its database) + its first
-        user. Refuses an existing slug -- joining an org goes through invites,
-        never through guessing its slug."""
-        if self.get_org(slug, ttl=0):
-            raise ValueError(f"an organization with the slug '{slug}' already exists")
+    def create_account(self, email, password):
+        """Self-serve signup: an account and nothing else.
+
+        The account deliberately belongs to no org yet -- registration used to
+        provision a database in the same request, which meant a failure there
+        cost the person their signup. An org is a second step (or an invite),
+        so the account exists first and outlives either."""
+        email = email.strip().lower()
         if self.get_user(email):
             raise ValueError("that email is already registered")
-        db_id = self.ensure_org(slug, org_name)
-        # two concurrent registrations can both pass the get_org check and both
+        self.sysdb.load("users", [{"email": email,
+                                   "password_hash": hash_password(password),
+                                   "org_slug": "",
+                                   "created_at": datetime.now(timezone.utc).isoformat()}],
+                        "upsert")
+        with self.lock:
+            self.route_cache.pop(email, None)
+
+    def create_org_for(self, email, org_name):
+        """Create an org around an account that already exists, making it the
+        first member, its admin, and its active org. Returns the slug.
+
+        Refuses an existing slug -- joining an org goes through invites, never
+        through guessing its slug."""
+        email = email.strip().lower()
+        name = (org_name or "").strip()[:60]
+        slug = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")[:40]
+        if len(name) < 2 or len(slug) < 2:
+            raise ValueError("organization name must be at least 2 characters")
+        if not self.get_user(email):
+            raise ValueError("no such user")
+        if self.get_org(slug, ttl=0):
+            raise ValueError(f"an organization with the slug '{slug}' already exists")
+        db_id = self.ensure_org(slug, name)
+        # two concurrent creations can both pass the get_org check and both
         # provision a database; the orgs upsert on slug picks one winner. Only
-        # the registration whose database actually landed may proceed -- the
-        # loser must not add a stranger to the winner's org.
+        # the one whose database actually landed may claim it -- the loser must
+        # not add a stranger to the winner's org.
         org = self.get_org(slug, ttl=0)
         if not org or org["database_id"] != db_id:
             raise ValueError(f"an organization with the slug '{slug}' already exists")
-        self.create_user(email, password, slug)
-        self.set_admin(email, slug)  # whoever creates the org administers it
+        first_member = not self._member_rows(slug)
+        self.add_membership(email, slug)
+        if first_member:
+            self.set_admin(email, slug)  # whoever creates the org administers it
+        self.switch_org(email, slug)
+        return slug
 
     def create_invite(self, email, org_slug, invited_by):
         """Invite `email` into `org_slug`; returns the single-use token. A
@@ -591,7 +620,9 @@ class AuthStore:
         slugs = {r["org_slug"] for r in rows}
         if not slugs:
             user = self.get_user(email)
-            if user:
+            # org_slug is empty for an account that has not made or joined an
+            # org yet; there is nothing to backfill and "" is not a membership
+            if user and user["org_slug"]:
                 self.add_membership(email, user["org_slug"])
                 slugs = {user["org_slug"]}
         return slugs
@@ -1312,6 +1343,12 @@ def apply_ingest(auth, pool, payload):
         raise ValueError("user_email is required")
     route = auth.route_for_email(user)
     if not route:
+        # registration creates the account before any org, so "no route" now
+        # has two causes and only one of them needs an admin
+        if auth.get_user(user):
+            raise PermissionError(
+                f"{user} has no organization yet; create or join one "
+                f"(sign in and follow /setup) before their usage is accepted")
         raise PermissionError(
             f"{user} is not a registered user; an admin must add them "
             f"(server.py adduser {user} --org <slug>) before their usage is accepted")
@@ -1471,25 +1508,44 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect("/register?err=Too+many+attempts%3B+try+again+later")
             return
         form = self._read_form()
-        org_name = (form.get("org_name") or "").strip()[:60]
-        slug = re.sub(r"[^a-z0-9-]", "-", org_name.lower()).strip("-")[:40]
         email = (form.get("email") or "").strip().lower()
         password = form.get("password") or ""
         try:
-            if len(org_name) < 2 or len(slug) < 2:
-                raise ValueError("organization name must be at least 2 characters")
             if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
                 raise ValueError("that does not look like an email address")
             if len(password) < 8:
                 raise ValueError("password must be at least 8 characters")
-            self.auth.register_org(org_name, slug, email, password)
+            self.auth.create_account(email, password)
         except ValueError as e:
             self._redirect("/register?err=" + quote(str(e)))
             return
         token = self.auth.login(email, password)
         cookie = (f"hotusage_session={token}; HttpOnly; SameSite=Lax; Path=/; "
                   f"Max-Age={SESSION_TTL}")
-        self._redirect("/", extra=[("Set-Cookie", cookie)])
+        # the account exists now; _needs_org sends them on to make one
+        self._redirect("/setup", extra=[("Set-Cookie", cookie)])
+
+    def _handle_setup(self):
+        """Create the org for a signed-in account that has none."""
+        viewer = self._viewer()
+        if not viewer:
+            self._redirect("/login?next=%2Fsetup")
+            return
+        if viewer.get("org_slug"):  # already belongs somewhere: nothing to make
+            self._redirect("/")
+            return
+        # its own bucket: creating an org provisions a database, which is the
+        # expensive half of signup, but it should not eat the registration
+        # budget a team behind one NAT is sharing
+        if self._rate_limited("setup"):
+            self._redirect("/setup?err=Too+many+attempts%3B+try+again+later")
+            return
+        try:
+            self.auth.create_org_for(viewer["email"], self._read_form().get("org_name", ""))
+        except ValueError as e:
+            self._redirect("/setup?err=" + quote(str(e)))
+            return
+        self._redirect("/")
 
     def _handle_invite_accept(self, token):
         # a team link is meant to be used by a whole team, often behind one
@@ -1537,6 +1593,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"error: /register: {e}", file=sys.stderr)
                 self._json({"error": "registration failed"}, 500)
+            return
+        if path == "/setup":
+            try:
+                self._handle_setup()
+            except Exception as e:
+                print(f"error: /setup: {e}", file=sys.stderr)
+                self._redirect("/setup?err=could+not+create+that+organization")
             return
         if path.startswith("/invite/"):
             try:
@@ -1898,6 +1961,17 @@ class Handler(BaseHTTPRequestHandler):
                 err = parse_qs(parsed.query).get("err", [""])[0]
                 self._page("register.html", {"ERROR": err[:200]})
                 return
+            if path == "/setup":
+                viewer = self._viewer()
+                if not viewer:
+                    self._redirect("/login?next=%2Fsetup")
+                    return
+                if viewer.get("org_slug"):  # already in one: nothing to ask for
+                    self._redirect("/")
+                    return
+                err = parse_qs(parsed.query).get("err", [""])[0]
+                self._page("setup.html", {"ERROR": err[:200], "EMAIL": viewer["email"]})
+                return
             if path.startswith("/invite/"):
                 token = path.rsplit("/", 1)[1]
                 err = parse_qs(parsed.query).get("err", [""])[0]
@@ -1929,8 +2003,12 @@ class Handler(BaseHTTPRequestHandler):
                                                     "or fully used."})
                 return
             if path == "/admin":
-                if not self._viewer():
+                viewer = self._viewer()
+                if not viewer:
                     self._redirect("/login?next=" + quote(self.path))
+                    return
+                if not viewer.get("org_slug"):  # nothing to administer yet
+                    self._redirect("/setup")
                     return
                 self._static("admin.html")
                 return
@@ -1940,6 +2018,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not viewer:
                     # sign in first, then come back to this exact approval
                     self._redirect("/login?next=" + quote(self.path))
+                    return
+                # a collector reports into its owner's active org, so there has
+                # to be one before a device can be approved at all
+                if not viewer.get("org_slug"):
+                    self._redirect("/setup")
                     return
                 if q.get("ok"):
                     self._page("device.html", {"STATE": "done", "CODE": "", "HOST": "",
@@ -1976,6 +2059,17 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": "unauthorized"}, 401)
                 else:
                     self._redirect("/login")
+                return
+
+            # registration creates the account alone, so a viewer can be signed
+            # in with no org. Everything below reads or writes one org's data,
+            # so ask for the org first rather than letting each handler meet an
+            # empty slug.
+            if not viewer.get("org_slug"):
+                if path.startswith("/api/"):
+                    self._json({"error": "you do not belong to an organization yet"}, 409)
+                else:
+                    self._redirect("/setup")
                 return
 
             if path == "/" or path == "/index.html":
