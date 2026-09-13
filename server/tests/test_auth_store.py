@@ -187,7 +187,11 @@ class StatefulSysDb:
                 self.tables[table].append(dict(r))
 
     def create_org_database(self, slug):
-        db = "dbid" + "".join(c for c in slug if c.isalnum()).ljust(14, "0")
+        # a fresh id per CALL, not per slug: the real API provisions a new
+        # database each time, and that difference is what lets the loser of a
+        # slug race notice it lost
+        self.n = getattr(self, "n", 0) + 1
+        db = f"dbid{''.join(c for c in slug if c.isalnum())[:14]}{self.n}"
         self.created.append(db)
         return db
 
@@ -226,11 +230,11 @@ def test_org_step_makes_them_first_member_and_admin():
     auth.create_account("ada@x.dev", "hunter2hunter2")
     slug = auth.create_org_for("ada@x.dev", "Acme Inc")
     assert slug == "acme-inc", slug
-    assert db.tables["orgs"][0]["database_id"] == "dbidacmeinc0000000", db.tables["orgs"]
+    assert db.tables["orgs"][0]["database_id"] == "dbidacmeinc1", db.tables["orgs"]
     assert [m["org_slug"] for m in db.tables["org_memberships"]] == ["acme-inc"]
     assert [a["email"] for a in db.tables["org_admins"]] == ["ada@x.dev"]
     assert db.tables["users"][0]["org_slug"] == "acme-inc", "it must become active"
-    assert auth.route_for_email("ada@x.dev") == ("acme-inc", "dbidacmeinc0000000")
+    assert auth.route_for_email("ada@x.dev") == ("acme-inc", "dbidacmeinc1")
     print(f"    {slug}: database provisioned, member, admin, active, routable")
 
 
@@ -262,6 +266,41 @@ def test_joining_an_org_does_not_grant_admin():
     assert auth.memberships("bob@x.dev") == {"acme-inc"}
     print("    bob is a member, admins unchanged:",
           [a["email"] for a in db.tables["org_admins"]])
+
+
+def test_losing_a_slug_race_does_not_join_the_winners_org():
+    """Two creations of one name can both pass the existence check. Both then
+    provision, and the orgs upsert makes the LAST writer the owner of the slug.
+    The earlier writer has to notice and refuse -- with ensure_org it could not,
+    because ensure_org hands back the existing row's database id, which would
+    equal what the loser was just given.
+    """
+    print("the loser of a slug race is refused, not quietly admitted:")
+    auth, db = signup_store()
+    auth.create_account("ada@x.dev", "hunter2hunter2")
+    auth.create_account("mallory@x.dev", "hunter2hunter2")
+
+    # ada provisions; mallory's concurrent provision lands on top of her row
+    real_provision = auth.provision_org
+    raced = {"done": False}
+
+    def provision_then_get_raced(slug, name=None):
+        mine = real_provision(slug, name)
+        if not raced["done"]:
+            raced["done"] = True
+            real_provision(slug, "Acme Inc")   # mallory, a moment later
+        return mine
+
+    auth.provision_org = provision_then_get_raced
+    refuses(lambda: auth.create_org_for("ada@x.dev", "Acme Inc"), "already exists")
+    auth.provision_org = real_provision
+
+    assert db.tables["orgs"][0]["database_id"] == db.created[-1], \
+        "the last writer owns the slug"
+    assert db.tables["org_memberships"] == [], db.tables["org_memberships"]
+    assert db.tables["org_admins"] == [], db.tables["org_admins"]
+    assert db.tables["users"][0]["org_slug"] == "", "ada stays org-less"
+    print("    no membership, no admin, no active org in a stranger's org")
 
 
 if __name__ == "__main__":

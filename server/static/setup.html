@@ -23,6 +23,7 @@
         your team's, is collected and read there.</p>
 
       <form method="post" action="/setup">
+        <input type="hidden" name="next" value="{{NEXT}}">
         <div class="field">
           <label for="org_name">Organization name</label>
           <input id="org_name" name="org_name" type="text" minlength="2" maxlength="60"

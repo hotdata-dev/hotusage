@@ -352,12 +352,21 @@ class AuthStore:
 
     def ensure_org(self, slug, name=None):
         """Returns the org's database id, provisioning a dedicated usage
-        database for a new org."""
-        if not re.match(r"^[a-z0-9][a-z0-9-]{0,60}$", slug):
-            raise ValueError("org slug must be lowercase alphanumeric/hyphens")
+        database for a new org. An org that already exists is returned as is --
+        callers that must have created it want provision_org."""
         org = self.get_org(slug, ttl=0)
         if org:
             return org["database_id"]
+        return self.provision_org(slug, name)
+
+    def provision_org(self, slug, name=None):
+        """Always provisions a fresh database and claims the slug for it.
+
+        Unconditional by design: it is what lets a caller tell whether it won
+        the race for a slug, by checking afterwards whose database the orgs row
+        ended up pointing at."""
+        if not re.match(r"^[a-z0-9][a-z0-9-]{0,60}$", slug):
+            raise ValueError("org slug must be lowercase alphanumeric/hyphens")
         db_id = self.sysdb.create_org_database(slug)
         self.pool.get(db_id).ensure_schema_and_tables(USAGE_TABLES)
         self.sysdb.load("orgs", [{"slug": slug, "name": name or slug, "database_id": db_id,
@@ -523,11 +532,15 @@ class AuthStore:
             raise ValueError("no such user")
         if self.get_org(slug, ttl=0):
             raise ValueError(f"an organization with the slug '{slug}' already exists")
-        db_id = self.ensure_org(slug, name)
+        # provision_org, not ensure_org: ensure_org hands back an EXISTING
+        # org's database, so a creation that lost the race would be given the
+        # winner's id and sail through the check below.
+        db_id = self.provision_org(slug, name)
         # two concurrent creations can both pass the get_org check and both
         # provision a database; the orgs upsert on slug picks one winner. Only
         # the one whose database actually landed may claim it -- the loser must
-        # not add a stranger to the winner's org.
+        # not add a stranger to the winner's org. The loser's database is left
+        # behind, unreferenced: cheaper than a stranger inside someone's org.
         org = self.get_org(slug, ttl=0)
         if not org or org["database_id"] != db_id:
             raise ValueError(f"an organization with the slug '{slug}' already exists")
@@ -1435,7 +1448,7 @@ class Handler(BaseHTTPRequestHandler):
     RATE_LIMIT, RATE_WINDOW = 5, 3600
     INVITE_RATE_LIMIT = 30
 
-    def _rate_limited(self, bucket, limit=None):
+    def _rate_limited(self, bucket, limit=None, record=True):
         # rightmost X-Forwarded-For entry: proxies (App Runner/ALB) append the
         # real peer to a client-supplied header, so position 0 is spoofable.
         fwd = self.headers.get("X-Forwarded-For", "")
@@ -1450,7 +1463,10 @@ class Handler(BaseHTTPRequestHandler):
             if len(hits) >= (limit or self.RATE_LIMIT):
                 Handler._rate[key] = hits
                 return True
-            hits.append(now)
+            # record=False asks "would this be limited?" without spending a hit,
+            # for callers that only want to charge for work they actually did
+            if record:
+                hits.append(now)
             Handler._rate[key] = hits
         return False
 
@@ -1531,21 +1547,28 @@ class Handler(BaseHTTPRequestHandler):
         if not viewer:
             self._redirect("/login?next=%2Fsetup")
             return
+        form = self._read_form()
+        nxt = self._safe_next(form.get("next", "/"))
         if viewer.get("org_slug"):  # already belongs somewhere: nothing to make
-            self._redirect("/")
+            self._redirect(nxt)
             return
         # its own bucket: creating an org provisions a database, which is the
         # expensive half of signup, but it should not eat the registration
-        # budget a team behind one NAT is sharing
-        if self._rate_limited("setup"):
+        # budget a team behind one NAT is sharing. Checked without recording --
+        # see the record below.
+        if self._rate_limited("setup", record=False):
             self._redirect("/setup?err=Too+many+attempts%3B+try+again+later")
             return
         try:
-            self.auth.create_org_for(viewer["email"], self._read_form().get("org_name", ""))
+            self.auth.create_org_for(viewer["email"], form.get("org_name", ""))
         except ValueError as e:
+            # a refusal costs a name, not a database, and must not count: every
+            # other page sends this account back here, so spending the budget on
+            # five taken names would leave it able to reach nothing but /logout
             self._redirect("/setup?err=" + quote(str(e)))
             return
-        self._redirect("/")
+        self._rate_limited("setup")  # the database is what the budget is for
+        self._redirect(nxt)
 
     def _handle_invite_accept(self, token):
         # a team link is meant to be used by a whole team, often behind one
@@ -1969,8 +1992,10 @@ class Handler(BaseHTTPRequestHandler):
                 if viewer.get("org_slug"):  # already in one: nothing to ask for
                     self._redirect("/")
                     return
-                err = parse_qs(parsed.query).get("err", [""])[0]
-                self._page("setup.html", {"ERROR": err[:200], "EMAIL": viewer["email"]})
+                q = parse_qs(parsed.query)
+                self._page("setup.html", {
+                    "ERROR": q.get("err", [""])[0][:200], "EMAIL": viewer["email"],
+                    "NEXT": self._safe_next(q.get("next", ["/"])[0])})
                 return
             if path.startswith("/invite/"):
                 token = path.rsplit("/", 1)[1]
@@ -2008,7 +2033,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._redirect("/login?next=" + quote(self.path))
                     return
                 if not viewer.get("org_slug"):  # nothing to administer yet
-                    self._redirect("/setup")
+                    self._redirect("/setup?next=" + quote(self.path))
                     return
                 self._static("admin.html")
                 return
@@ -2020,9 +2045,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._redirect("/login?next=" + quote(self.path))
                     return
                 # a collector reports into its owner's active org, so there has
-                # to be one before a device can be approved at all
+                # to be one before a device can be approved at all. Carry the
+                # code through: it is in the URL the collector printed, and
+                # losing it means going back to the terminal for it.
                 if not viewer.get("org_slug"):
-                    self._redirect("/setup")
+                    self._redirect("/setup?next=" + quote(self.path))
                     return
                 if q.get("ok"):
                     self._page("device.html", {"STATE": "done", "CODE": "", "HOST": "",
@@ -2069,7 +2096,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path.startswith("/api/"):
                     self._json({"error": "you do not belong to an organization yet"}, 409)
                 else:
-                    self._redirect("/setup")
+                    self._redirect("/setup?next=" + quote(self.path))
                 return
 
             if path == "/" or path == "/index.html":
