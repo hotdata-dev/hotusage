@@ -99,8 +99,13 @@ const roleChip = (isAdmin) => el('span', {
 
 function stampMs(v) {
   if (!v) return null;
-  // the store hands these back as ISO strings; tolerate a space separator
-  const t = Date.parse(String(v).replace(' ', 'T'));
+  // The store hands these back as ISO strings, and not always with an offset --
+  // AuthStore._age_seconds defends against the naive form for the same reason.
+  // Date.parse reads a naive string as LOCAL time, so west of UTC the stamp
+  // lands in the future and a long-dead collector would show a green dot.
+  // Treat "no offset" as UTC, exactly as the server does.
+  const s = String(v).replace(' ', 'T');
+  const t = Date.parse(/(?:Z|[+-]\d\d:?\d\d)$/.test(s) ? s : s + 'Z');
   return Number.isNaN(t) ? null : t;
 }
 
@@ -246,16 +251,25 @@ function setInviteKind(kind) {
   (kind === 'single' ? $('#inviteEmail') : $('#teamDomain')).focus();
 }
 
+// aria-modal on a plain div does not stop Tab from reaching the page behind the
+// backdrop, so the page itself goes inert while the dialog is up: without it a
+// keyboard user tabs past Create link straight into the nav and the roster,
+// both of them covered.
+const BEHIND = () => [document.querySelector('header.top'), document.querySelector('.wrap')];
+
 function openInvite() {
   clearErrors();
   $('#linkOut').hidden = true;
   $('#inviteEmail').value = '';
   $('#inviteModal').hidden = false;
+  for (const n of BEHIND()) if (n) n.inert = true;
   (inviteKind === 'single' ? $('#inviteEmail') : $('#teamDomain')).focus();
 }
 
 function closeInvite() {
   $('#inviteModal').hidden = true;
+  // clear inert BEFORE handing focus back, or the button cannot take it
+  for (const n of BEHIND()) if (n) n.inert = false;
   $('#inviteOpen').focus();
 }
 
