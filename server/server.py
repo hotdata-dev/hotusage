@@ -175,18 +175,31 @@ class HotdataClient:
         self.db = database_id
         self._client = None
         self.write_lock = threading.Lock()
+        self._client_lock = threading.Lock()
 
     def client(self):
-        if self._client is None:
-            import hotdata
-            key = core.hotdata_api_key()
-            if not key:
-                raise RuntimeError("no hotdata API key (HOTDATA_API_KEY or ~/.hotdata/hotdata.json)")
-            self._client = hotdata.ApiClient(hotdata.Configuration(
-                host=os.environ.get("HOTDATA_API_HOST", "https://api.hotdata.dev"),
-                api_key=key,
-                workspace_id=os.environ.get("HOTDATA_WORKSPACE", core.WORKSPACE_ID),
-            ))
+        """The one ApiClient for this database, built on first use.
+
+        Locked, because gather() is the first thing to reach a cold client and
+        it arrives on several threads at once: unlocked, each would see None,
+        each would build an ApiClient with its own urllib3 pool, and all but
+        the last would be dropped on the floor still holding their sockets.
+        Checked twice so the warm path -- every call after the first -- stays
+        a plain attribute read."""
+        if self._client is not None:
+            return self._client
+        with self._client_lock:
+            if self._client is None:
+                import hotdata
+                key = core.hotdata_api_key()
+                if not key:
+                    raise RuntimeError(
+                        "no hotdata API key (HOTDATA_API_KEY or ~/.hotdata/hotdata.json)")
+                self._client = hotdata.ApiClient(hotdata.Configuration(
+                    host=os.environ.get("HOTDATA_API_HOST", "https://api.hotdata.dev"),
+                    api_key=key,
+                    workspace_id=os.environ.get("HOTDATA_WORKSPACE", core.WORKSPACE_ID),
+                ))
         return self._client
 
     def sql(self, query, timeout=None):
@@ -297,7 +310,13 @@ def gather(tasks=None, /, **thunks):
     An exception in any thunk propagates, as it would have in series.
     A thunk may gather() in turn, so the queries in flight can reach the
     product of the two fan-outs -- fine against an API that does not
-    throttle concurrent queries, worth revisiting if that changes."""
+    throttle concurrent queries, worth revisiting if that changes. The
+    generated client's connection_pool_maxsize was 50 when measured against
+    the hotdata python package 0.10.0 (2026-09-13; the CLI is versioned
+    separately and is not this), so a fan-out of this shape reuses
+    connections rather than reopening them; a bound here would only be
+    needed if a single request's fan-out approached that. The Dockerfile
+    pins no version, so re-measure before relying on the number."""
     work = {**(tasks or {}), **thunks}
     if not work:
         return {}
