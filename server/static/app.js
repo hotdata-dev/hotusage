@@ -774,10 +774,9 @@ function populateUsers() {
   if (![...counts.keys()].includes(state.user)) state.user = 'all';
   sel.value = state.user;
   sel.onchange = () => { state.user = sel.value; state.page = 0; render(); };
-  // hide the filter until more than one user reports in
-  const show = counts.size > 1;
-  sel.style.display = show ? '' : 'none';
-  $('#userLabel').style.display = show ? '' : 'none';
+  // hide the filter until more than one user reports in -- the whole group, so
+  // the label never outlives the control it names
+  $('#userGroup').hidden = counts.size <= 1;
 }
 
 function populateProviders() {
@@ -796,9 +795,7 @@ function populateProviders() {
     }));
   }
   // a single tool needs no filter
-  const show = providers.length > 1;
-  seg.style.display = show ? '' : 'none';
-  seg.previousElementSibling.style.display = show ? '' : 'none';
+  $('#providerGroup').hidden = providers.length <= 1;
 }
 
 const TILE_COUNT = 6; // must match renderTiles(), so nothing reflows on arrival
@@ -845,9 +842,13 @@ async function load(fresh, days) {
       window.setViewer(body.viewer.email, body.viewer.org);
     }
     state.detailCache.clear();
+    // short enough to sit in the filter row; the counts and the source ride in
+    // the title, where they are one hover away rather than a page away
     const nSess = state.data.sessions.length;
-    $('#srcNote').textContent = `${nSess} sessions from ${state.data.source || 'hotdata'}, fetched ` +
-      new Date(state.data.generatedAt).toLocaleTimeString();
+    const note = $('#srcNote');
+    note.textContent = 'fetched ' +
+      new Date(state.data.generatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    note.title = `${nSess} sessions from ${state.data.source || 'hotdata'}`;
     populateProviders();
     populateUsers();
     populateProjects();

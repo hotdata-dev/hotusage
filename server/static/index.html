@@ -11,24 +11,40 @@
   <header class="top"></header>
   <div class="wrap">
     <div class="filters" id="filters">
-      <span class="flabel">Tool</span>
-      <div class="seg" id="providerSeg" role="group" aria-label="Tool"></div>
-      <span class="flabel" id="userLabel">User</span>
-      <select class="project" id="userSel" aria-label="User"></select>
-      <span class="flabel">Project</span>
-      <select class="project" id="projectSel" aria-label="Project"></select>
-      <span class="flabel">Range</span>
-      <div class="seg" id="rangeSeg" role="group" aria-label="Date range">
-        <button data-range="1" type="button">Today</button>
-        <button data-range="7" type="button">7d</button>
-        <button data-range="30" type="button" aria-pressed="true">30d</button>
-        <button data-range="90" type="button">90d</button>
-        <button data-range="all" type="button">All time</button>
+      <div class="fgroup" id="providerGroup">
+        <span class="flabel">Tool</span>
+        <div class="seg" id="providerSeg" role="group" aria-label="Tool"></div>
       </div>
-      <span class="flabel">Metric</span>
-      <div class="seg" id="metricSeg" role="group" aria-label="Metric">
-        <button data-metric="tok" type="button" aria-pressed="true">Tokens</button>
-        <button data-metric="cost" type="button">Est. cost</button>
+      <div class="fgroup" id="userGroup">
+        <span class="flabel">User</span>
+        <select class="project" id="userSel" aria-label="User"></select>
+      </div>
+      <div class="fgroup">
+        <span class="flabel">Project</span>
+        <select class="project" id="projectSel" aria-label="Project"></select>
+      </div>
+      <div class="fgroup">
+        <span class="flabel">Range</span>
+        <div class="seg" id="rangeSeg" role="group" aria-label="Date range">
+          <button data-range="1" type="button">Today</button>
+          <button data-range="7" type="button">7d</button>
+          <button data-range="30" type="button" aria-pressed="true">30d</button>
+          <button data-range="90" type="button">90d</button>
+          <button data-range="all" type="button">All time</button>
+        </div>
+      </div>
+      <div class="fgroup">
+        <span class="flabel">Metric</span>
+        <div class="seg" id="metricSeg" role="group" aria-label="Metric">
+          <button data-metric="tok" type="button" aria-pressed="true">Tokens</button>
+          <button data-metric="cost" type="button">Est. cost</button>
+        </div>
+      </div>
+      <span class="spacer"></span>
+      <!-- freshness sits with the control that changes it, not a page away -->
+      <div class="fgroup">
+        <span class="flabel" id="srcNote"></span>
+        <button class="refresh" id="refresh" type="button">Refresh</button>
       </div>
     </div>
 
@@ -60,7 +76,6 @@
       Served from the hotdata <code>hotusage</code> database, fed by per-user hotusage
       collectors (Claude Code, Codex, and OpenCode history; Cursor and Gemini CLI keep
       no local token counts).
-      Data: <span id="srcNote"></span>
     </footer>
   </div>
 

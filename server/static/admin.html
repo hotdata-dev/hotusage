@@ -32,6 +32,9 @@
         <h2>Members</h2>
         <span class="spacer"></span>
         <span class="flabel" id="memberCount"></span>
+        <button class="refresh primary adminonly" id="inviteOpen" type="button" hidden>
+          Invite people
+        </button>
       </div>
       <table class="admintable" id="members">
         <thead>
@@ -43,18 +46,6 @@
           <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
         </tbody>
       </table>
-      <div class="cardfoot adminonly">
-        <input id="inviteEmail" type="email" placeholder="teammate@company.com">
-        <button class="refresh" id="inviteCreate" type="button">Invite</button>
-        <span class="sep"></span>
-        <input id="teamDomain" type="text" placeholder="Domain (optional)">
-        <input id="teamMaxUses" type="number" min="0" step="1" placeholder="Max uses">
-        <button class="refresh" id="teamCreate" type="button">Create team link</button>
-      </div>
-      <div class="linkout" id="linkOut" hidden>
-        <input id="linkValue" readonly>
-        <button class="refresh" id="linkCopy" type="button">Copy</button>
-      </div>
     </div>
 
     <div class="card sysonly" hidden>
@@ -76,29 +67,37 @@
       <div class="cardfoot">
         <input id="newOrgName" type="text" placeholder="Organization name">
         <input id="newOrgOwner" type="email" placeholder="Owner email (optional)">
-        <button class="refresh" id="orgCreate" type="button">Create organization</button>
+        <button class="refresh primary" id="orgCreate" type="button">Create organization</button>
       </div>
+      <div class="modal-err" id="orgErr" hidden></div>
       <div class="linkout" id="orgLinkOut" hidden>
         <input id="orgLinkValue" readonly>
         <button class="refresh" id="orgLinkCopy" type="button">Copy</button>
       </div>
 
-      <div class="cardfoot">
-        <span class="flabel">Override database</span>
-        <select class="project" id="dbOrg" aria-label="Organization"></select>
-        <input id="dbId" type="text" spellcheck="false" autocapitalize="off"
-               placeholder="dbid..." aria-label="Database id">
-        <button class="refresh" id="dbSave" type="button">Override</button>
-      </div>
-      <div class="notice danger">
-        <b>An organization's database is its isolation.</b> Repointing one changes
-        where its dashboard reads and where its collectors' usage lands. Rows
-        already reported stay in the old database and disappear from the
-        dashboard &mdash; nothing is moved or copied. A database with no usage
-        tables gets them on save. An id already claimed by another organization
-        is refused: one database per organization is the only thing keeping their
-        data apart.
-      </div>
+      <!-- Break-glass, used a few times a year: collapsed by default, with the
+           warning inside it rather than standing permanently on the page. -->
+      <details class="adv" id="dbOverride">
+        <summary>Override an organization&rsquo;s database</summary>
+        <div class="adv-body">
+          <div class="notice danger">
+            <b>An organization's database is its isolation.</b> Repointing one changes
+            where its dashboard reads and where its collectors' usage lands. Rows
+            already reported stay in the old database and disappear from the
+            dashboard &mdash; nothing is moved or copied. A database with no usage
+            tables gets them on save. An id already claimed by another organization
+            is refused: one database per organization is the only thing keeping their
+            data apart.
+          </div>
+          <div class="advrow">
+            <select id="dbOrg" aria-label="Organization"></select>
+            <input id="dbId" type="text" spellcheck="false" autocapitalize="off"
+                   placeholder="dbid..." aria-label="Database id">
+            <button class="refresh danger-out" id="dbSave" type="button">Override</button>
+          </div>
+          <div class="modal-err" id="dbErr" hidden></div>
+        </div>
+      </details>
     </div>
 
     <div class="card adminonly">
@@ -112,19 +111,25 @@
           <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
         </tbody>
       </table>
+      <div class="empty" id="invitesEmpty" hidden>
+        No pending invites &mdash; invite someone from the Members card.
+      </div>
     </div>
 
     <div class="card adminonly">
       <div class="card-head"><h2>Signed-in collectors</h2></div>
       <table class="admintable" id="collectors">
         <thead>
-          <tr class="head"><th>Member</th><th>Machine</th><th>Signed in</th><th>Last sync</th><th></th></tr>
+          <tr class="head"><th>Member</th><th>Machine</th><th>Last sync</th><th></th></tr>
         </thead>
         <tbody>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
         </tbody>
       </table>
+      <div class="empty" id="collectorsEmpty" hidden>
+        Nobody has signed in a collector yet.
+      </div>
     </div>
 
     <footer class="foot">
@@ -133,6 +138,47 @@
       by a dedicated hotdata database, not by a query filter.
     </footer>
   </div>
+
+  <!-- Invite dialog: both link kinds behind one action, so the Members card
+       stays a roster instead of carrying two forms in its footer. -->
+  <div class="modal" id="inviteModal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="inviteTitle">
+      <h2 id="inviteTitle">Invite people</h2>
+      <p class="modal-sub">They get a link &mdash; nothing is emailed, you share it yourself.</p>
+      <div class="seg" id="inviteKind" role="group" aria-label="Invite kind">
+        <button type="button" data-kind="single" aria-pressed="true">One person</button>
+        <button type="button" data-kind="team" aria-pressed="false">Team link</button>
+      </div>
+      <div class="modal-err" id="inviteErr" hidden></div>
+      <div id="invitePaneSingle">
+        <div class="modal-row">
+          <input id="inviteEmail" type="email" placeholder="teammate@company.com">
+        </div>
+        <p class="modal-hint">Bound to that address, valid 7 days, and dies the moment it is used.</p>
+      </div>
+      <div id="invitePaneTeam" hidden>
+        <div class="modal-row">
+          <input id="teamDomain" type="text" placeholder="Domain (optional)">
+          <input id="teamMaxUses" type="number" min="0" step="1" placeholder="Max uses">
+        </div>
+        <p class="modal-hint">
+          Reusable for 30 days. Restrict it to your domain unless you are sharing it
+          privately &mdash; anyone holding an open link can join and read this
+          organization's usage.
+        </p>
+      </div>
+      <div class="modal-result" id="linkOut" hidden>
+        <input id="linkValue" readonly>
+        <button class="refresh" id="linkCopy" type="button">Copy</button>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-close" id="inviteCancel" type="button">Close</button>
+        <span class="spacer"></span>
+        <button class="refresh primary" id="inviteCreate" type="button">Create link</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/nav.js"></script>
   <script src="/static/admin.js"></script>
 </body>

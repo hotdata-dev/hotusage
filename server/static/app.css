@@ -20,6 +20,11 @@
   --danger:         #e34948;
   --danger-bg:      rgba(227, 73, 72, 0.12);
   --danger-edge:    rgba(227, 73, 72, 0.40);
+  /* status: healthy / gone quiet, for the admin page's collector dots. Their
+     own values rather than --s-cw and --s-cr: those two mean cache write and
+     cache read wherever a chart is drawn, and a status dot is not a series. */
+  --ok:             #1f9d63;
+  --stale:          #d08700;
   --lift:           brightness(1.06);
 }
 @media (prefers-color-scheme: dark) {
@@ -41,6 +46,8 @@
     --danger:       #f2706f;
     --danger-bg:    rgba(242, 112, 111, 0.14);
     --danger-edge:  rgba(242, 112, 111, 0.42);
+    --ok:           #34b37e;
+    --stale:        #d4930f;
     --lift:         brightness(1.15);
   }
 }
@@ -63,18 +70,39 @@ header.top { background: var(--surface); border-bottom: 1px solid var(--border);
 header.top h1 { font-size: 19px; font-weight: 650; margin: 0; letter-spacing: -.012em; }
 header.top .sub { color: var(--ink-2); font-size: 13px; }
 header.top .spacer { flex: 1; }
+/* Three tiers, one base. Default is the quiet one and stays the majority:
+   `primary` marks the single main action of a card (at most one), and
+   `danger-out` marks an action whose blast radius is a whole organization.
+   The primary fill borrows --s-out because that hue is already this UI's
+   interactive accent -- it draws every focus ring. */
 button.refresh {
   background: var(--surface); color: var(--ink-2);
   border: 1px solid var(--border); border-radius: 8px;
   padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer;
 }
 button.refresh:hover { color: var(--ink); }
+button.refresh.primary {
+  background: var(--s-out); border-color: var(--s-out); color: #fff; font-weight: 600;
+}
+button.refresh.primary:hover { color: #fff; filter: var(--lift); }
+button.refresh.danger-out {
+  background: transparent; border-color: var(--danger-edge); color: var(--danger);
+}
+button.refresh.danger-out:hover { color: var(--danger); background: var(--danger-bg); }
+button.refresh:disabled { opacity: 0.45; cursor: default; }
 
-/* ---- filter row: one row, above everything it scopes ---- */
+/* ---- filter row: one row, above everything it scopes ----
+   Each label travels with the control it names (.fgroup), so a wrap breaks
+   between groups instead of stranding a label at the end of a line. The
+   groups that hide themselves when there is nothing to filter hide the label
+   with them, for the same reason. */
 .filters {
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
   margin-bottom: 16px;
 }
+.fgroup { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.fgroup[hidden] { display: none; }
+.filters .spacer { flex: 1; }
 .seg { display: inline-flex; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
 .seg button {
   border: 0; background: transparent; color: var(--ink-2);
@@ -198,6 +226,11 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .modal-close:hover { color: var(--ink); }
 .modal-or { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
 #teamMaxUses { max-width: 110px; }
+.modal-hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+.modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+.modal-actions .spacer { flex: 1; }
+/* the display rules above beat the hidden attribute unless it is spelled out */
+.modal-row[hidden], .modal-result[hidden], .modal-actions[hidden] { display: none; }
 
 /* One focus ring for every control. Only the sign-in form had one, so tabbing
    through the dashboard's filters or the admin forms showed nothing. No radius
