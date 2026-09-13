@@ -19,22 +19,28 @@
       <div class="err" id="err">{{ERROR}}</div>
 
       <div id="confirm" hidden>
-        <p class="devtext">A hotusage collector on <b>{{HOST}}</b> is asking to
-          report usage as <b>{{EMAIL}}</b>.</p>
-        <p class="devtext"><b>Only approve this if you just clicked Sign In on
-          that machine.</b> Approving grants that collector permission to report
-          usage as you. Check the code matches the one in its menu:</p>
+        <p class="devtext">hotusage on <b>{{HOST}}</b> is asking to sign in as
+          <b>{{EMAIL}}</b> and:</p>
+        <ul class="devtext" id="grants">
+          <li id="grant-ingest" hidden>report this machine's coding-agent usage
+            as you</li>
+          <li id="grant-read" hidden><b>read your organization's usage</b> —
+            everyone's sessions, projects and costs — so your coding agent can
+            answer questions about it</li>
+        </ul>
+        <p class="devtext"><b>Only approve this if you just started a sign-in
+          on that machine.</b> Check the code matches the one it showed you:</p>
         <div class="devcode">{{CODE}}</div>
         <form method="post" action="/device/approve">
           <input type="hidden" name="user_code" value="{{CODE}}">
-          <button class="signin" type="submit">Approve this collector</button>
+          <button class="signin" type="submit" id="approve">Approve</button>
         </form>
         <div class="alt">Not you? Close this page and the request expires on its own.</div>
       </div>
 
       <div id="done" hidden>
-        <p class="devtext">Approved. The collector on this account is signing in
-          now — you can close this page.</p>
+        <p class="devtext">Approved. The machine that asked is signing in now —
+          you can close this page.</p>
         <div class="alt"><a href="/">Back to the dashboard</a></div>
       </div>
 
@@ -49,8 +55,18 @@
     var state = "{{STATE}}";
     var panel = document.getElementById(state);
     if (panel) panel.hidden = false;
-    if (state === 'done') document.getElementById('sub').textContent = 'Collector approved';
+    if (state === 'done') document.getElementById('sub').textContent = 'Approved';
     if (state === 'bad') document.getElementById('sub').textContent = 'Sign-in request';
+    if (state === 'confirm') {
+      var scopes = "{{SCOPE}}".split(',');
+      var read = scopes.indexOf('read') >= 0;
+      var ingest = scopes.indexOf('ingest') >= 0;
+      document.getElementById('grant-ingest').hidden = !ingest;
+      document.getElementById('grant-read').hidden = !read;
+      document.getElementById('sub').textContent =
+        read && !ingest ? 'Approve read access' : 'Approve this machine';
+      document.getElementById('approve').textContent = 'Approve';
+    }
   </script>
 </body>
 </html>

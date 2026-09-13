@@ -1,10 +1,14 @@
-# hotusage
+# hotusage-server
 
-Company-wide usage analytics for AI coding agents (Claude Code, Codex,
-OpenCode). A small collector runs on each person's machine and reports their
-local agent history to a central server; the dashboard shows sessions, tokens,
-and estimated cost for your whole organization — by user, tool, project, and
-date.
+The hosted half of hotusage: company-wide usage analytics for AI coding agents
+(Claude Code, Codex, OpenCode). The [client](../hotusage-client) runs on each
+person's machine and reports their local agent history here; the dashboard
+shows sessions, tokens, and estimated cost for your whole organization — by
+user, tool, project, and date. The same client also queries this server's API
+so a coding agent can answer questions about the numbers.
+
+Most people never install this — it runs at hotusage.ai. Everything below is
+for running or operating it.
 
 Not collected: **Cursor** and **Gemini CLI** — neither stores token counts
 locally, so there is nothing to report.
@@ -16,21 +20,31 @@ physically isolated.
 ## For team members
 
 Your admin sends you an invite link (or a reusable team link). Open it, pick a
-password, and you're in. Then install the collector:
+password, and you're in. Then install the client:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-collector/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh | sh
 ```
 
-That one line installs the collector (macOS menu bar, Windows tray, or Linux
-daemon), registers it as a login service, and walks you through sign-in: your
-browser opens, you confirm the code shown in the menu, and the collector starts
-reporting as you. Headless machines run `hotusage-collector signin` instead.
+That one line installs `hotusage` (macOS menu bar, Windows tray, or Linux
+daemon), registers it as a login service, installs the agent skill for Claude
+Code and Codex, and walks you through sign-in: your browser opens, you confirm
+the code shown in the menu, and the machine starts reporting as you. Headless
+machines run `hotusage signin` instead.
 
 From then on it syncs automatically — only changed sessions are re-sent. Open
-the dashboard at your server's URL to see your team's usage. **Sign Out** in
-the collector menu (or `hotusage-collector signout`) stops that machine from
-reporting; other machines stay signed in.
+the dashboard at your server's URL to see your team's usage, or ask your coding
+agent ("what did we spend on Claude Code last month?"). **Sign Out** in the
+menu (or `hotusage signout`) stops that machine from reporting *and* from
+reading; other machines stay signed in.
+
+## The read API
+
+Besides the dashboard, the server exposes a small read-only API that the client
+uses to answer questions about usage: `GET /api/data`, `/api/session/<id>`,
+`/api/orgs` and `/api/status`, authenticated with a `read`-scoped bearer token
+(`Handler.READ_TOKEN_PATHS` is the allow-list). Tokens are minted by the same
+device flow collectors use; see **Tokens are scoped** below.
 
 ## For organization admins
 
@@ -47,9 +61,11 @@ Everything is on the **Organization** page (`/admin`, linked from the header):
 - **Manage members.** See everyone, promote or demote admins (the last admin
   can't be demoted), and remove people. Removing someone revokes their logins
   and collectors; their already-reported usage stays.
-- **Revoke access.** Outstanding invite links and signed-in collectors are
-  listed with revoke buttons. The collectors list shows each machine and when
-  it last reported — handy for spotting one that stopped.
+- **Revoke access.** Outstanding invite links and signed-in machines are listed
+  with revoke buttons. The machines list shows each one, what it may do
+  (*Reports + reads* for a current client, *Reports usage* for one signed in
+  before 0.4.0), and when it was last active — handy for spotting a machine
+  that stopped reporting.
 - **Rename the org.**
 
 A person can belong to several organizations; the account menu switches which
@@ -114,10 +130,10 @@ server.py deluser jane@acme.com              # + revokes their logins and collec
 server.py makeadmin jane@acme.com            # org admin (unadmin to demote)
 server.py makesysadmin jane@acme.com         # platform operator (unsysadmin to revoke)
 
-# invites and collectors
+# invites and signed-in machines
 server.py listinvites                     # both kinds, with uses + days left
 server.py revokeinvite <token>
-server.py listtokens                      # who is signed in, from where, last used
+server.py listtokens                      # who is signed in, from where, scope, last used
 server.py revoketoken <token>             # or: --user <email> for all of theirs
 ```
 
@@ -133,14 +149,23 @@ next.
   `core.py` — update it when providers reprice.
 - **Usage from unregistered emails is rejected** (403) — the collector shows
   the error in its menu; once the person is invited, the next sync succeeds.
-- **Collector tokens identify their owner**: ingest signed in as someone
-  reports as that account, whatever the payload claims. The shared
+- **Per-user tokens identify their owner**: ingest signed in as someone reports
+  as that account, whatever the payload claims. The shared
   `HOTUSAGE_INGEST_TOKEN` still works but only admits — anyone holding it can
   report as any registered colleague — so prefer sign-in.
+- **Tokens are scoped.** A token carries a set: `ingest` reports usage, `read`
+  queries the org through the API. A token with no scope row predates scopes
+  and means `ingest` alone, so every already-deployed collector keeps working
+  untouched. The client asks for both at once — it runs the background sync and
+  the agent skill on one machine, and two approvals for one laptop would be
+  ceremony rather than security. A server-side script that should report but
+  never read (or vice versa) can still be given one scope; `listtokens` shows
+  what each holds.
 - **Backups**: hotdata forks are cheap deep copies —
   `hotdata databases fork <dbid> --name <label>` snapshots an org database (or
   the system database) before risky changes.
-- **Collector internals** live in the
-  [`hotusage-collector`](https://github.com/hotdata-dev/hotusage-collector)
-  repo (Rust). Its config is `~/.hotusage/collector.json` (mode 0600 — it
-  holds a token).
+- **Client internals** live in the
+  [`hotusage-client`](https://github.com/hotdata-dev/hotusage-client) repo
+  (Rust). Its config is `~/.hotusage/collector.json` (mode 0600 — it holds a
+  token); the filename predates the rename and is kept so deployed machines
+  keep their sign-in.

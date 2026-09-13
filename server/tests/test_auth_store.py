@@ -154,7 +154,11 @@ class StatefulSysDb:
     """
 
     KEYS = {"users": ("email",), "orgs": ("slug",), "org_admins": ("email", "org_slug"),
-            "org_memberships": ("email", "org_slug")}
+            "org_memberships": ("email", "org_slug"),
+            "device_codes": ("device_code",), "device_scopes": ("device_code",),
+            "collector_tokens": ("token",), "token_scopes": ("token",),
+            "collector_token_usage": ("token",), "auth_sessions": ("token",),
+            "system_admins": ("email",)}
 
     def __init__(self, db="dbidsystem00000000000000"):
         self.db = db
@@ -301,6 +305,211 @@ def test_losing_a_slug_race_does_not_join_the_winners_org():
     assert db.tables["org_admins"] == [], db.tables["org_admins"]
     assert db.tables["users"][0]["org_slug"] == "", "ada stays org-less"
     print("    no membership, no admin, no active org in a stranger's org")
+
+
+def approved_token(auth, email, scope=None, hostname="laptop"):
+    """Drive one device sign-in end to end and return the minted token."""
+    kwargs = {} if scope is None else {"scope": scope}
+    device_code, user_code = auth.start_device_auth(hostname, **kwargs)
+    auth.approve_device(user_code, email)
+    got = auth.poll_device(device_code)
+    assert got, "an approved device must hand its token over"
+    assert got[0] == email, got
+    return got[1]
+
+
+def scoped_store():
+    auth, db = signup_store()
+    auth.create_account("ada@x.dev", "hunter2hunter2")
+    auth.create_org_for("ada@x.dev", "Acme Inc")
+    return auth, db
+
+
+def test_a_collector_token_still_means_ingest():
+    print("a sign-in that names no scope mints an ingest token:")
+    auth, db = scoped_store()
+    token = approved_token(auth, "ada@x.dev")
+    assert db.tables["token_scopes"] == [], "the default must write no scope row"
+    assert auth.token_scopes(token) == {"ingest"}
+    assert auth.collector_token_user(token) == "ada@x.dev"
+    # which is exactly what a token minted before scopes existed looks like
+    assert auth.read_viewer(token) is None, "an ingest token must not read"
+    print("    no scope row, ingests, cannot read")
+
+
+def test_a_read_token_reads_and_cannot_ingest():
+    print("a read sign-in mints a token that can only read:")
+    auth, db = scoped_store()
+    token = approved_token(auth, "ada@x.dev", scope="read")
+    assert auth.token_scopes(token) == {"read"}
+    # /ingest asks for an ingest token by default, and must not get one here
+    assert auth.collector_token_user(token) is None, "a read token must not ingest"
+    viewer = auth.read_viewer(token)
+    assert viewer["email"] == "ada@x.dev", viewer
+    assert viewer["org_slug"] == "acme-inc", viewer
+    assert viewer["database_id"] == "dbidacmeinc1", viewer
+    print(f"    reads as {viewer['email']} in {viewer['org_slug']}, cannot ingest")
+
+
+def test_scope_is_fixed_when_the_device_starts_not_when_it_is_approved():
+    print("the approval page's scope is the one the device asked for:")
+    auth, db = scoped_store()
+    device_code, user_code = auth.start_device_auth("laptop", scope="read")
+    assert auth.device_scopes(device_code) == {"read"}
+    auth.approve_device(user_code, "ada@x.dev")
+    token = auth.poll_device(device_code)[1]
+    assert auth.token_scopes(token) == {"read"}
+    # the device row and its scope are consumed together
+    assert db.tables["device_codes"] == [] and db.tables["device_scopes"] == []
+    print("    read asked, read granted, both rows consumed")
+
+
+def test_unknown_scopes_are_refused_before_anything_is_written():
+    print("an unknown scope is refused:")
+    auth, db = scoped_store()
+    before = len(db.tables["device_codes"])
+    refuses(lambda: auth.start_device_auth("laptop", scope="admin"), "unknown scope")
+    refuses(lambda: auth.start_device_auth("laptop", scope="ingest,admin"),
+            "unknown scope")
+    assert len(db.tables["device_codes"]) == before, "a refusal must mint no device"
+
+
+def test_an_unknown_stored_scope_grants_nothing():
+    """A token minted by a newer build and then rolled back carries a scope
+    this build cannot read. Falling back to the default would silently promote
+    a read-only credential into one that can write usage rows."""
+    print("a token scope this build does not understand:")
+    auth, db = scoped_store()
+    token = approved_token(auth, "ada@x.dev", scope="read")
+    # what a newer build would have written
+    db.load("token_scopes", [{"token": token, "scope": "read,export"}], "upsert")
+    auth.forget_token(token)
+    assert auth.token_scopes(token) == frozenset(), "it must grant nothing"
+    assert auth.collector_token_user(token) is None, "and must not ingest"
+    assert auth.read_viewer(token) is None, "nor read"
+    # but it stays listed, and revocable, from the admin page
+    assert auth.describe_scopes("read,export") == ["export", "read"]
+    assert auth.revoke_collector_token(token) == "ada@x.dev"
+    print("    denied everywhere, still visible and revocable")
+
+
+def test_describe_scopes_never_raises():
+    """It feeds the admin page, which is the one place a strange token can be
+    revoked from -- a 500 there would strand it."""
+    print("the admin page tolerates any stored value:")
+    for raw in ("read,export", "", None, "NONSENSE", "ingest, read", ",,,"):
+        got = server.AuthStore.describe_scopes(raw)
+        assert isinstance(got, list), (raw, got)
+    assert server.AuthStore.describe_scopes("ingest, read") == ["ingest", "read"]
+    print("    6 values described without raising")
+
+
+def test_an_unknown_device_scope_fails_the_approval():
+    """The opposite choice from a token: someone is looking at a page that just
+    told them what they are granting, so mint nothing rather than something
+    different from what it said."""
+    print("a device asking for something unknown:")
+    auth, db = scoped_store()
+    device_code, user_code = auth.start_device_auth("laptop", scope="read")
+    db.load("device_scopes",
+            [{"device_code": device_code, "scope": "read,export"}], "upsert")
+    refuses(lambda: auth.approve_device(user_code, "ada@x.dev"), "unknown scope")
+    assert db.tables["collector_tokens"] == [], "no credential may be minted"
+
+
+def test_one_approval_can_grant_both():
+    """The client installs the background sync and the skill together, so it
+    asks for both at once rather than making the person approve two devices."""
+    print("a single sign-in granting ingest and read:")
+    auth, db = scoped_store()
+    token = approved_token(auth, "ada@x.dev", scope="ingest,read")
+    assert auth.token_scopes(token) == {"ingest", "read"}
+    # both capabilities, on the one credential
+    assert auth.collector_token_user(token) == "ada@x.dev", "it must ingest"
+    assert auth.read_viewer(token)["org_slug"] == "acme-inc", "and read"
+    # stored in one canonical spelling, whatever order it was asked for
+    assert db.tables["token_scopes"][0]["scope"] == "ingest,read"
+    other = approved_token(auth, "ada@x.dev", scope="read,ingest")
+    assert auth.token_scopes(other) == {"ingest", "read"}
+    print("    ingest + read on one token, stored as 'ingest,read'")
+
+
+def test_scope_parsing_is_order_and_whitespace_insensitive():
+    print("scope strings are normalised:")
+    p = server.AuthStore.parse_scopes
+    assert p("read") == {"read"}
+    assert p(" ingest , read ") == {"ingest", "read"}
+    assert p("read,read") == {"read"}
+    assert p(["ingest", "read"]) == {"ingest", "read"}
+    # empty means the default, which is what a client predating scopes sends
+    assert p("") == {"ingest"} and p(None) == {"ingest"} and p([]) == {"ingest"}
+    assert server.AuthStore.join_scopes({"read", "ingest"}) == "ingest,read"
+    print("    order, spacing, duplicates and emptiness all handled")
+
+
+def test_a_failed_scope_write_mints_no_usable_token():
+    """The scope is written before the credential, so a failure there leaves an
+    orphan scope row rather than a live ingest token nobody asked for."""
+    print("a scope write that fails mints nothing:")
+    auth, db = scoped_store()
+    device_code, user_code = auth.start_device_auth("laptop", scope="read")
+    real_load = db.load
+
+    def fail_on_token_scopes(table, rows, mode):
+        if table == "token_scopes" and mode == "upsert":
+            raise RuntimeError("hotdata is cold")
+        real_load(table, rows, mode)
+
+    db.load = fail_on_token_scopes
+    try:
+        auth.approve_device(user_code, "ada@x.dev")
+        raise AssertionError("expected the scope write to propagate")
+    except RuntimeError as e:
+        print(f"    raised: {e}")
+    finally:
+        db.load = real_load
+    assert db.tables["collector_tokens"] == [], \
+        "no credential may survive a failed scope write"
+    # and the device is still pending, so the person can simply try again
+    assert auth.poll_device(device_code) is None
+    print("    no token written, the device is still pending")
+
+
+def test_renaming_the_org_drops_cached_read_viewers():
+    print("a rename reaches read tokens too:")
+    auth, db = scoped_store()
+    token = approved_token(auth, "ada@x.dev", scope="read")
+    assert auth.read_viewer(token)["org_name"] == "Acme Inc"
+    auth.rename_org("acme-inc", "Acme Corp")
+    assert auth.read_viewer(token)["org_name"] == "Acme Corp", \
+        "the cached viewer carried the old name"
+    print("    Acme Inc -> Acme Corp, seen immediately")
+
+
+def test_revoking_a_read_token_takes_effect_at_once():
+    print("revoking a read token drops the row and the cached viewer:")
+    auth, db = scoped_store()
+    token = approved_token(auth, "ada@x.dev", scope="read")
+    assert auth.read_viewer(token), "it reads before the revoke"
+    assert auth.revoke_collector_token(token) == "ada@x.dev"
+    assert db.tables["collector_tokens"] == [], "the credential is gone"
+    assert db.tables["token_scopes"] == [], "and so is its scope row"
+    # a cached viewer outliving the credential is the bug this guards
+    assert auth.read_viewer(token) is None, "it must stop reading immediately"
+    print("    token, scope and cache all cleared")
+
+
+def test_removing_a_member_revokes_their_read_token_too():
+    print("removing a member takes their read token with them:")
+    auth, db = scoped_store()
+    auth.create_account("bob@x.dev", "hunter2hunter2")
+    auth.join_org("bob@x.dev", "acme-inc")
+    token = approved_token(auth, "bob@x.dev", scope="read")
+    assert auth.read_viewer(token), "it reads while he is a member"
+    auth.remove_user("bob@x.dev")
+    assert db.tables["token_scopes"] == [], db.tables["token_scopes"]
+    assert auth.read_viewer(token) is None, "a removed member reads nothing"
+    print("    bob removed, his read token is dead")
 
 
 if __name__ == "__main__":

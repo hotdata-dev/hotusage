@@ -17,6 +17,11 @@ send `Authorization: Bearer $HOTUSAGE_INGEST_TOKEN` (unset = dev mode). Usage
 reported by an email that is not a registered user is rejected (403) — there
 is no org database to put it in.
 
+Per-user bearer tokens are minted by the device flow and carry a scope:
+`ingest` (the collector; also what every token minted before scopes existed
+means) or `read`, which may call the read-only GETs in Handler.READ_TOKEN_PATHS
+and nothing else. That is what the hotusage skill signs in with.
+
 Usage: python3 server.py [--port 8377] [--host 127.0.0.1] [--ttl 60]
                          [--system-database <dbid>]
        python3 server.py addorg <slug> [--name NAME]   # provisions the org db
@@ -159,11 +164,25 @@ TABLES = {
                  ("hostname", "VARCHAR"), ("created_at", "TIMESTAMPTZ"),
                  ("last_used_at", "TIMESTAMPTZ")],
     },
+    # Scope side tables: hotdata fixes a table's columns at first write (see
+    # org_admins), so what a credential may DO lives beside it rather than on
+    # it. `scope` is a comma-joined set ("ingest", "read", "ingest,read").
+    # Absence of a row means "ingest" -- the only thing a token could do before
+    # these tables -- so every already-minted token keeps meaning what it meant.
+    "device_scopes": {
+        "key": ["device_code"],
+        "cols": [("device_code", "VARCHAR"), ("scope", "VARCHAR")],
+    },
+    "token_scopes": {
+        "key": ["token"],
+        "cols": [("token", "VARCHAR"), ("scope", "VARCHAR")],
+    },
 }
 
 USAGE_TABLES = ("sessions", "requests", "daily_usage")
 SYSTEM_TABLES = ("orgs", "users", "auth_sessions", "invites", "team_invites",
-                 "device_codes", "collector_tokens", "collector_token_usage",
+                 "device_codes", "device_scopes", "collector_tokens",
+                 "collector_token_usage", "token_scopes",
                  "org_admins", "system_admins", "org_memberships")
 
 
@@ -355,6 +374,8 @@ class AuthStore:
         self.token_cache = {}        # token -> (viewer dict, expires_at)
         self.route_cache = {}        # email -> ((org_slug, db_id), fetched_at)
         self.org_cache = {}          # org_slug -> (org dict, fetched_at)
+        self.scope_cache = {}        # token -> (scope, fetched_at); real tokens only
+        self.read_cache = {}         # token -> (viewer dict, fetched_at)
         self.lock = threading.Lock()
 
     def get_org(self, slug, ttl=60):
@@ -483,6 +504,7 @@ class AuthStore:
                                   f"WHERE expires_at < {time.time()}")
             if dev:
                 self.sysdb.load("device_codes", dev, "delete")
+                self.sysdb.load("device_scopes", dev, "delete")
         except Exception as e:
             print(f"warn: session purge: {e}", file=sys.stderr)
 
@@ -507,6 +529,33 @@ class AuthStore:
                   "database_id": r["database_id"]}
         with self.lock:
             self.token_cache[token] = (viewer, float(r["expires_at"]))
+        return viewer
+
+    READ_TOKEN_TTL = 60
+
+    def read_viewer(self, token, ttl=None):
+        """The viewer a read-scoped bearer token stands for, or None.
+
+        Shaped exactly like a cookie session's viewer so every handler below
+        can treat the two the same. Cached briefly rather than for a session
+        lifetime: these tokens do not expire, so a revoke or an org switch has
+        only this window to take effect."""
+        ttl = self.READ_TOKEN_TTL if ttl is None else ttl
+        with self.lock:
+            hit = self.read_cache.get(token)
+            if hit and time.time() - hit[1] < ttl:
+                return hit[0]
+        email = self.collector_token_user(token, scope="read")
+        if not email:
+            return None
+        user = self.get_user(email)
+        if not user:
+            return None
+        viewer = {"email": user["email"], "org_slug": user["org_slug"],
+                  "org_name": user["org_name"] or user["org_slug"],
+                  "database_id": user["database_id"], "via": "token"}
+        with self.lock:
+            self.read_cache[token] = (viewer, time.time())
         return viewer
 
     def route_for_email(self, email, ttl=60):
@@ -686,6 +735,7 @@ class AuthStore:
         with self.lock:
             self.route_cache.pop(email, None)
             self.token_cache.clear()  # sessions carry the org they were minted in
+            self.read_cache.clear()   # and so do read tokens' cached viewers
 
     # --- platform operators --------------------------------------------------
     def is_system_admin(self, email):
@@ -865,6 +915,12 @@ class AuthStore:
                 self.sysdb.load("collector_token_usage", ctoks, "delete")
             except Exception as e:
                 print(f"warn: usage row delete: {e}", file=sys.stderr)
+            try:
+                self.sysdb.load("token_scopes", ctoks, "delete")
+            except Exception as e:
+                print(f"warn: scope row delete: {e}", file=sys.stderr)
+            for t in ctoks:
+                self.forget_token(t["token"])
         for slug in self.memberships(email):
             self.set_admin(email, slug, False)
             self.sysdb.load("org_memberships",
@@ -890,8 +946,10 @@ class AuthStore:
         with self.lock:
             self.org_cache.pop(slug, None)
             # sessions carry the org name they were minted with, so drop them
-            # from the cache or the old name lingers until they expire
+            # from the cache or the old name lingers until they expire -- and
+            # read tokens' cached viewers carry it too
             self.token_cache.clear()
+            self.read_cache.clear()
 
     # hotdata ids are opaque but well-shaped; refusing anything else keeps a
     # typo from repointing an org at nothing
@@ -947,6 +1005,7 @@ class AuthStore:
             # database this call just replaced
             self.route_cache.clear()
             self.token_cache.clear()
+            self.read_cache.clear()
         return row["database_id"]
 
     def revoke_any_invite(self, token, org_slug):
@@ -960,7 +1019,7 @@ class AuthStore:
         raise ValueError("no such invite in this organization")
 
     def revoke_collector_token_for_org(self, token, org_slug):
-        email = self.collector_token_user(token)
+        email = self.collector_token_user(token, scope=None)
         user = self.get_user(email) if email else None
         if not user or user["org_slug"] != org_slug:
             raise ValueError("no such collector in this organization")
@@ -995,10 +1054,21 @@ class AuthStore:
             f"SELECT token, user_email, hostname, created_at "
             f"FROM {SYS}.public.collector_tokens WHERE user_email IN ({wanted})")
         tokens = ", ".join(sql_str(t["token"]) for t in toks) or "''"
-        used = {u["token"]: u["last_used_at"] for u in self.sysdb.rows(
-            f"SELECT token, last_used_at FROM {SYS}.public.collector_token_usage "
-            f"WHERE token IN ({tokens})")}
-        return [{**t, "last_used_at": used.get(t["token"])} for t in toks]
+        both = gather(
+            used=lambda: self.sysdb.rows(
+                f"SELECT token, last_used_at FROM {SYS}.public.collector_token_usage "
+                f"WHERE token IN ({tokens})"),
+            scopes=lambda: self.sysdb.rows(
+                f"SELECT token, scope FROM {SYS}.public.token_scopes "
+                f"WHERE token IN ({tokens})"))
+        used = {u["token"]: u["last_used_at"] for u in both["used"]}
+        # a token that can read is a credential for this org's data too, so it
+        # is listed (and revocable) here rather than hidden for not being a
+        # collector. The scope rides along so the page can say what each may do.
+        scopes = {s["token"]: s["scope"] for s in both["scopes"]}
+        return [{**t, "last_used_at": used.get(t["token"]),
+                 "scopes": self.describe_scopes(scopes.get(t["token"], ""))}
+                for t in toks]
 
     # --- reusable team links -------------------------------------------------
     TEAM_INVITE_TTL = 30 * 24 * 3600
@@ -1090,8 +1160,53 @@ class AuthStore:
     # and compared on another cannot be mistyped into a different valid code
     USER_CODE_ALPHABET = "ACDEFGHJKMNPQRTUVWXY3479"
 
-    def start_device_auth(self, hostname):
+    # What a minted token may do. "ingest" reports usage (the collector; also
+    # what every token minted before scopes existed means); "read" queries the
+    # owner's org through the API and can never write. A token carries a SET of
+    # these: the client signs in once and installs both the background sync and
+    # the skill, so asking the person to approve two separate devices would be
+    # ceremony for nothing -- they are the same machine either way.
+    VALID_SCOPES = ("ingest", "read")
+    DEFAULT_SCOPES = frozenset({"ingest"})
+
+    @classmethod
+    def parse_scopes(cls, raw):
+        """'read', 'ingest,read', '' -> a validated set. Empty means the
+        default, which is what a client predating scopes sends."""
+        if isinstance(raw, (list, tuple, set, frozenset)):
+            parts = [str(s).strip().lower() for s in raw]
+        else:
+            parts = [p.strip().lower() for p in str(raw or "").split(",")]
+        parts = [p for p in parts if p]
+        if not parts:
+            return cls.DEFAULT_SCOPES
+        unknown = [p for p in parts if p not in cls.VALID_SCOPES]
+        if unknown:
+            raise ValueError(f"unknown scope: {unknown[0]}")
+        return frozenset(parts)
+
+    @classmethod
+    def describe_scopes(cls, raw):
+        """The stored scope string as a list, for display only.
+
+        Never raises: this feeds the admin page, which is the one place a
+        strange token can be revoked from, so an unrecognised value must be
+        shown rather than turned into a 500 for the whole organization.
+        Enforcement is `token_scopes`, which denies what it cannot parse."""
+        try:
+            return sorted(cls.parse_scopes(raw))
+        except ValueError:
+            return sorted({p.strip().lower()
+                           for p in str(raw or "").split(",") if p.strip()})
+
+    @staticmethod
+    def join_scopes(scopes):
+        """The stored form. Sorted, so one set has exactly one spelling."""
+        return ",".join(sorted(scopes))
+
+    def start_device_auth(self, hostname, scope="ingest"):
         """Begin a sign-in attempt. Returns (device_code, user_code)."""
+        scopes = self.parse_scopes(scope)
         device_code = secrets.token_urlsafe(32)
         user_code = "-".join(
             "".join(secrets.choice(self.USER_CODE_ALPHABET) for _ in range(4))
@@ -1103,7 +1218,25 @@ class AuthStore:
             "expires_at": time.time() + self.DEVICE_CODE_TTL,
             "approved_email": "", "collector_token": "",
         }], "upsert")
+        if scopes != self.DEFAULT_SCOPES:
+            # only the non-default is recorded: a missing row already means
+            # "ingest", which keeps legacy device rows meaning what they meant
+            self.sysdb.load("device_scopes",
+                            [{"device_code": device_code,
+                              "scope": self.join_scopes(scopes)}], "upsert")
         return device_code, user_code
+
+    def device_scopes(self, device_code):
+        """What the waiting device asked to be allowed to do, as a set."""
+        rows = self.sysdb.rows(f"SELECT scope FROM {SYS}.public.device_scopes "
+                               f"WHERE device_code = {sql_str(device_code)}")
+        if not rows:
+            return self.DEFAULT_SCOPES
+        # deliberately unguarded: approve_device is the only caller, and a
+        # request for something this build cannot grant must fail the approval
+        # rather than quietly mint a token for a DIFFERENT set of powers than
+        # the page just described to the person clicking Approve.
+        return self.parse_scopes(rows[0]["scope"])
 
     def _device_row(self, column, value):
         if not value or not re.match(r"^[A-Za-z0-9_-]{4,64}$", value):
@@ -1121,13 +1254,25 @@ class AuthStore:
 
     def approve_device(self, user_code, email, hostname_confirm=None):
         """The signed-in person approves an attempt: mint a collector token
-        bound to their account and hand it to the waiting collector."""
+        bound to their account and hand it to the waiting collector.
+
+        The token carries the scope the device asked for, which is also what
+        the approval page told the person they were granting."""
         row = self.get_device_by_user_code(user_code)
         if not row:
             raise ValueError("this sign-in request is invalid or has expired")
         if row["approved_email"]:
             raise ValueError("this sign-in request was already approved")
+        scopes = self.device_scopes(row["device_code"])
         token = secrets.token_urlsafe(32)
+        # Scope first, credential second. A scope row for a token that does not
+        # exist yet grants nothing, but a credential whose scope write failed
+        # would be a live INGEST token nobody asked for -- and the caller, which
+        # raises before delivering it, would never know to revoke it.
+        if scopes != self.DEFAULT_SCOPES:
+            self.sysdb.load("token_scopes",
+                            [{"token": token,
+                              "scope": self.join_scopes(scopes)}], "upsert")
         self.sysdb.load("collector_tokens", [{
             "token": token, "user_email": email, "hostname": row["hostname"],
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1148,11 +1293,20 @@ class AuthStore:
         if not row["approved_email"]:
             return None
         self.sysdb.load("device_codes", [{"device_code": row["device_code"]}], "delete")
+        try:
+            # the scope now lives on the minted token; this row's only reader
+            # was approve_device. An orphan grants nothing, so it must not fail
+            # the sign-in it is trailing.
+            self.sysdb.load("device_scopes",
+                            [{"device_code": row["device_code"]}], "delete")
+        except Exception as e:
+            print(f"warn: device scope delete: {e}", file=sys.stderr)
         return row["approved_email"], row["collector_token"]
 
     def revoke_collector_token(self, token):
-        """Sign out one collector. Returns the address it belonged to."""
-        email = self.collector_token_user(token)
+        """Sign out one collector (or one skill). Returns the address it
+        belonged to."""
+        email = self.collector_token_user(token, scope=None)
         if not email:
             return None
         self.sysdb.load("collector_tokens", [{"token": token}], "delete")
@@ -1160,14 +1314,56 @@ class AuthStore:
             self.sysdb.load("collector_token_usage", [{"token": token}], "delete")
         except Exception as e:
             print(f"warn: usage row delete: {e}", file=sys.stderr)
+        try:
+            self.sysdb.load("token_scopes", [{"token": token}], "delete")
+        except Exception as e:
+            print(f"warn: scope row delete: {e}", file=sys.stderr)
+        self.forget_token(token)
         return email
+
+    def forget_token(self, token):
+        """Drop every cached fact about one bearer token, so a revoke takes
+        effect now rather than when the caches age out."""
+        with self.lock:
+            self.scope_cache.pop(token, None)
+            self.read_cache.pop(token, None)
 
     # An admin wants to know which machines are still reporting, but a write
     # per ingest would be absurd, so the stamp is refreshed at most hourly.
     LAST_USED_RESOLUTION = 3600
 
-    def collector_token_user(self, token):
-        """The account a collector token belongs to, or None."""
+    TOKEN_SCOPE_TTL = 300
+
+    def token_scopes(self, token):
+        """What `token` is allowed to do, as a set. A token with no scope row
+        predates scopes (or was minted ingest-only) and means "ingest"."""
+        with self.lock:
+            hit = self.scope_cache.get(token)
+            if hit and time.time() - hit[1] < self.TOKEN_SCOPE_TTL:
+                return hit[0]
+        rows = self.sysdb.rows(f"SELECT scope FROM {SYS}.public.token_scopes "
+                               f"WHERE token = {sql_str(token)}")
+        try:
+            scopes = self.parse_scopes(rows[0]["scope"]) if rows \
+                else self.DEFAULT_SCOPES
+        except ValueError:
+            # A scope this build does not know means a newer build minted this
+            # token and was rolled back. Granting the default would SILENTLY
+            # PROMOTE a read-only credential to one that can write usage rows,
+            # so grant nothing instead and make it visibly unusable.
+            print("warn: token carries an unknown scope; denying it",
+                  file=sys.stderr)
+            scopes = frozenset()
+        with self.lock:
+            self.scope_cache[token] = (scopes, time.time())
+        return scopes
+
+    def collector_token_user(self, token, scope="ingest"):
+        """The account a collector token belongs to, or None.
+
+        `scope` is what the caller is about to let this token do; a token
+        minted for something else is not a credential here, so it reads as no
+        token at all. Pass None where any scope will do (signing out)."""
         if not token or not re.match(r"^[A-Za-z0-9_-]{20,64}$", token):
             return None
         # Never join here: hotdata errors on a declared-but-empty table, and a
@@ -1176,6 +1372,8 @@ class AuthStore:
         rows = self.sysdb.rows(f"SELECT token, user_email FROM {SYS}.public.collector_tokens "
                                f"WHERE token = {sql_str(token)}")
         if not rows:
+            return None
+        if scope is not None and scope not in self.token_scopes(token):
             return None
         try:
             # inside the guard: reading the stamp is as fallible as writing it,
@@ -1470,6 +1668,30 @@ class Handler(BaseHTTPRequestHandler):
     def _viewer(self):
         return self.auth.user_for_token(self._cookie_token())
 
+    # Read-only GETs a `read`-scoped bearer token may call. Deliberately a
+    # short allow-list rather than "anything under /api/": every other route
+    # either mutates something or hands back credentials (invite links,
+    # collector tokens), and a token minted for reporting must reach neither.
+    READ_TOKEN_PATHS = ("/api/data", "/api/orgs", "/api/status")
+    READ_TOKEN_PREFIXES = ("/api/session/",)
+
+    def _bearer(self):
+        auth = self.headers.get("Authorization", "")
+        return auth[len("Bearer "):].strip() if auth.startswith("Bearer ") else ""
+
+    def _read_viewer(self, path):
+        """Cookie session first, then a read-scoped bearer token on the routes
+        that allow one. Bearer credentials are never sent by a browser on its
+        own, so these routes need no CSRF defence beyond staying read-only."""
+        viewer = self._viewer()
+        if viewer:
+            return viewer
+        if path not in self.READ_TOKEN_PATHS and \
+                not any(path.startswith(p) for p in self.READ_TOKEN_PREFIXES):
+            return None
+        token = self._bearer()
+        return self.auth.read_viewer(token) if token else None
+
     # naive per-instance, per-IP limiter for the unauthenticated write paths
     # (register + invite accept both create users; register also provisions a
     # hotdata database). App Runner may run several instances, so the real
@@ -1735,13 +1957,27 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 length = int(self.headers.get("Content-Length", 0))
                 payload = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+                # absent means "ingest": collectors in the field send no scope
+                # and must keep getting the credential they have always got.
+                # parse_scopes handles the string and list forms and refuses
+                # anything else, so a `"scope": {...}` is a 400 rather than an
+                # AttributeError on .strip() and a 500.
+                scope = payload.get("scope") or "ingest"
+                if not isinstance(scope, (str, list, tuple)):
+                    raise ValueError("scope must be a string or a list")
                 device_code, user_code = self.auth.start_device_auth(
-                    payload.get("hostname", ""))
+                    payload.get("hostname", ""), scope=scope)
                 proto, host = self._public_origin()
                 self._json({"device_code": device_code, "user_code": user_code,
                             "verification_url": f"{proto}://{host}/device?code={user_code}",
+                            # echo the CANONICAL set, not what was asked for:
+                            # the client stores this as what it was granted
+                            "scope": AuthStore.join_scopes(
+                                AuthStore.parse_scopes(scope)),
                             "expires_in": AuthStore.DEVICE_CODE_TTL,
                             "interval": AuthStore.DEVICE_POLL_INTERVAL})
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
             except Exception as e:
                 print(f"error: /api/device/start: {e}", file=sys.stderr)
                 self._json({"error": "could not start sign-in"}, 500)
@@ -1862,9 +2098,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/collector/signout":
             try:
-                auth = self.headers.get("Authorization", "")
-                presented = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
-                email = self.auth.revoke_collector_token(presented)
+                email = self.auth.revoke_collector_token(self._bearer())
                 if not email:
                     # already gone, or a shared token that owns no row: the
                     # collector is signed out either way, so do not fail it
@@ -2115,19 +2349,25 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if q.get("ok"):
                     self._page("device.html", {"STATE": "done", "CODE": "", "HOST": "",
-                                               "EMAIL": viewer["email"], "ERROR": ""})
+                                               "SCOPE": "", "EMAIL": viewer["email"],
+                                               "ERROR": ""})
                     return
                 code = (q.get("code", [""])[0] or "").strip().upper()
                 row = self.auth.get_device_by_user_code(code)
                 if not row or row["approved_email"]:
                     self._page("device.html", {"STATE": "bad", "CODE": code, "HOST": "",
-                                               "EMAIL": viewer["email"],
+                                               "SCOPE": "", "EMAIL": viewer["email"],
                                                "ERROR": q.get("err", [""])[0][:200] or
                                                "That sign-in request is invalid, "
                                                "expired, or already approved."})
                     return
+                # the page must name what it is about to grant: approving read
+                # access hands a machine this org's usage, which is a different
+                # decision from letting it report usage
+                scopes = self.auth.device_scopes(row["device_code"])
                 self._page("device.html", {"STATE": "confirm", "CODE": code,
                                            "HOST": row["hostname"] or "an unnamed machine",
+                                           "SCOPE": AuthStore.join_scopes(scopes),
                                            "EMAIL": viewer["email"],
                                            "ERROR": q.get("err", [""])[0][:200]})
                 return
@@ -2142,7 +2382,7 @@ class Handler(BaseHTTPRequestHandler):
                     ("Set-Cookie", self._session_cookie("", max_age=0))])
                 return
 
-            viewer = self._viewer()
+            viewer = self._read_viewer(path)
             if not viewer:
                 if path.startswith("/api/"):
                     self._json({"error": "unauthorized"}, 401)
@@ -2287,13 +2527,15 @@ ADMIN_VERBS = ("adduser", "addorg", "resetpw", "deluser", "delorg",
                "makesysadmin", "unsysadmin")
 
 def drop_usage_rows(auth, rows):
-    """Best-effort cleanup of usage stamps. The credential delete is what
-    revokes access; a leftover stamp row grants nothing, so it must never
-    abort the work that follows it."""
-    try:
-        auth.sysdb.load("collector_token_usage", rows, "delete")
-    except Exception as e:
-        print(f"warn: usage row delete: {e}", file=sys.stderr)
+    """Best-effort cleanup of the side rows that hang off a token: its usage
+    stamp and its scope. The credential delete is what revokes access; neither
+    of these grants anything on its own, so neither may abort the work that
+    follows it."""
+    for table in ("collector_token_usage", "token_scopes"):
+        try:
+            auth.sysdb.load(table, rows, "delete")
+        except Exception as e:
+            print(f"warn: {table} row delete: {e}", file=sys.stderr)
 
 
 def user_admin_cli(argv):
@@ -2448,13 +2690,16 @@ def user_admin_cli(argv):
         # merged in Python, not joined: see collector_token_user
         used_by = {u["token"]: u["last_used_at"] for u in auth.sysdb.rows(
             f"SELECT token, last_used_at FROM {SYS}.public.collector_token_usage")}
+        scopes = {s["token"]: s["scope"] for s in auth.sysdb.rows(
+            f"SELECT token, scope FROM {SYS}.public.token_scopes")}
         for t in toks:
             stamp = used_by.get(t["token"])
             used = str(stamp)[:16] if stamp else "never"
-            print(f"{t['user_email']:<32} {t['hostname'] or '?':<20} "
+            scope = ",".join(AuthStore.describe_scopes(scopes.get(t["token"], "")))
+            print(f"{t['user_email']:<32} {t['hostname'] or '?':<20} {scope:<12} "
                   f"since {str(t['created_at'])[:10]}  last used {used:<16}  {t['token']}")
         if not toks:
-            print("no collector tokens (nobody has signed in a collector yet)")
+            print("no tokens (nobody has signed in a collector or a skill yet)")
 
     elif verb == "revoketoken":
         if not a.user and not a.target:
