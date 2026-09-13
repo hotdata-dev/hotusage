@@ -126,12 +126,13 @@ function ago(ms) {
 // Green while it is still reporting, amber once it has gone quiet for a day,
 // hollow if it never reported at all. The server refreshes this stamp at most
 // hourly per token, so the exact value rides in the title rather than the cell.
-function syncCell(v) {
+function syncCell(v, read) {
   const ms = stampMs(v);
   const cls = ms === null ? 'never' : (Date.now() - ms < DAY_MS ? 'ok' : 'stale');
+  const verb = read ? 'used' : 'reported';
   const title = ms === null
-    ? 'this collector has not reported yet'
-    : `last reported ${stampText(v)} UTC (this stamp refreshes at most hourly)`;
+    ? `this ${read ? 'sign-in has not been used' : 'collector has not reported'} yet`
+    : `last ${verb} ${stampText(v)} UTC (this stamp refreshes at most hourly)`;
   return el('span', { class: 'sync', title },
     el('span', { class: 'dot ' + cls }),
     el('span', { text: ms === null ? 'never' : ago(ms) }));
@@ -192,8 +193,14 @@ function renderCollectors() {
   const rows = state.collectors || [];
   setEmpty('#collectors', '#collectorsEmpty', !rows.length);
   for (const c of rows) {
+    const scopes = c.scopes || ['ingest'];
+    const read = scopes.includes('read');
+    const ingest = scopes.includes('ingest');
+    const loses = [ingest && 'stops reporting usage',
+      read && 'can no longer answer questions about this organization']
+      .filter(Boolean).join(', and ');
     const revoke = action('Revoke', true, () => {
-      if (!confirm(`Revoke the collector on ${c.hostname || 'that machine'}? It stops reporting.`)) return;
+      if (!confirm(`Revoke ${c.hostname || 'that machine'}? It ${loses}.`)) return;
       act(() => api('/api/admin/revoke-token', { token: c.token }));
     });
     // when it signed in answers no routine question; last sync does, so the
@@ -201,7 +208,15 @@ function renderCollectors() {
     const machine = el('span', {
       text: c.hostname || '?', title: 'signed in ' + day(c.created_at),
     });
-    t.append(row(c.user_email, machine, syncCell(c.last_used_at),
+    const label = ingest && read ? 'Reports + reads'
+      : read ? 'Reads usage' : 'Reports usage';
+    const access = el('span', {
+      class: 'chip', text: label,
+      title: [ingest && 'reports this machine’s usage',
+        read && 'reads this organization’s usage'].filter(Boolean).join('; '),
+    });
+    t.append(row(c.user_email, machine, access,
+      syncCell(c.last_used_at, !ingest),
       el('div', { class: 'rowactions' }, revoke)));
   }
 }

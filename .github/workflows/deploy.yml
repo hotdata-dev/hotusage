@@ -19,6 +19,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Every suite is stdlib-only and needs no hotdata account, so they run
+      # before the image is even built.
+      - name: Tests
+        run: |
+          for t in server/tests/test_*.py; do
+            echo "== $t"
+            python3 "$t"
+          done
+
       - name: Build image
         run: docker build -t "$GHCR_IMAGE:${{ github.sha }}" .
 
