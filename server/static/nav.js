@@ -9,17 +9,22 @@
   // Nine cells warming toward the corner -- the shape of a usage heatmap. Drawn
   // with currentColor and the same series tokens the charts use, so it follows
   // the theme with no image asset and nothing extra to load.
+  //
+  // The token fills go in `style`, not in a fill="" presentation attribute: a
+  // presentation attribute is a CSS declaration, so an engine that does not
+  // resolve var() there drops it, and `fill` then inherits "none" from the root
+  // svg -- a cell that silently vanishes. An inline style resolves everywhere.
   const MARK = `
     <svg class="mark" width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
       <rect x="3"  y="3"  width="8" height="8" rx="2.5" fill="currentColor" opacity=".18"/>
       <rect x="12" y="3"  width="8" height="8" rx="2.5" fill="currentColor" opacity=".3"/>
-      <rect x="21" y="3"  width="8" height="8" rx="2.5" fill="var(--s-out)" opacity=".55"/>
+      <rect x="21" y="3"  width="8" height="8" rx="2.5" style="fill: var(--s-out)" opacity=".55"/>
       <rect x="3"  y="12" width="8" height="8" rx="2.5" fill="currentColor" opacity=".3"/>
-      <rect x="12" y="12" width="8" height="8" rx="2.5" fill="var(--s-cw)" opacity=".6"/>
-      <rect x="21" y="12" width="8" height="8" rx="2.5" fill="var(--s-cr)" opacity=".8"/>
-      <rect x="3"  y="21" width="8" height="8" rx="2.5" fill="var(--s-out)" opacity=".55"/>
-      <rect x="12" y="21" width="8" height="8" rx="2.5" fill="var(--s-cr)" opacity=".8"/>
-      <rect x="21" y="21" width="8" height="8" rx="2.5" fill="var(--s-in)"/>
+      <rect x="12" y="12" width="8" height="8" rx="2.5" style="fill: var(--s-cw)" opacity=".6"/>
+      <rect x="21" y="12" width="8" height="8" rx="2.5" style="fill: var(--s-cr)" opacity=".8"/>
+      <rect x="3"  y="21" width="8" height="8" rx="2.5" style="fill: var(--s-out)" opacity=".55"/>
+      <rect x="12" y="21" width="8" height="8" rx="2.5" style="fill: var(--s-cr)" opacity=".8"/>
+      <rect x="21" y="21" width="8" height="8" rx="2.5" style="fill: var(--s-in)"/>
     </svg>`;
 
   const PAGES = [

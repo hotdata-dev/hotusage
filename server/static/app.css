@@ -218,8 +218,10 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .navlinks { display: flex; gap: 2px; }
 .navlink { color: var(--ink-2); text-decoration: none; font-size: 13px;
            padding: 5px 10px; border-radius: 7px; }
-.navlink:hover { color: var(--ink); background: var(--surface); }
-.navlink.current { color: var(--ink); background: var(--surface);
+/* --page, not --surface: the header bar is --surface now, so a --surface chip
+   would be invisible against it */
+.navlink:hover { color: var(--ink); background: var(--page); }
+.navlink.current { color: var(--ink); background: var(--page);
                    border: 1px solid var(--border); padding: 4px 9px; }
 .accountwrap { position: relative; }
 .account { display: flex; align-items: center; gap: 6px; background: var(--surface);
