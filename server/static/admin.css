@@ -33,3 +33,9 @@
 /* display rules above beat the hidden attribute unless it is spelled out */
 .cardfoot[hidden], .linkout[hidden], .orgrow[hidden] { display: none; }
 .card.sysonly[hidden] { display: none; }
+
+/* Placeholder rows: same .skel shimmer the dashboard uses (app.css), so both
+   pages fade in identically. The fixed cell height holds each card at its real
+   size from first paint, so nothing jumps when the state call lands. */
+.admintable .skel-cell { height: 12px; width: 68%; }
+.admintable td:first-child .skel-cell { width: 88%; }
