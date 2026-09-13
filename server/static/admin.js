@@ -99,13 +99,20 @@ const roleChip = (isAdmin) => el('span', {
 
 function stampMs(v) {
   if (!v) return null;
-  // The store hands these back as ISO strings, and not always with an offset --
-  // AuthStore._age_seconds defends against the naive form for the same reason.
-  // Date.parse reads a naive string as LOCAL time, so west of UTC the stamp
-  // lands in the future and a long-dead collector would show a green dot.
-  // Treat "no offset" as UTC, exactly as the server does.
-  const s = String(v).replace(' ', 'T');
-  const t = Date.parse(/(?:Z|[+-]\d\d:?\d\d)$/.test(s) ? s : s + 'Z');
+  // Date.parse needs the offset spelled ±HH:MM (or Z); it returns NaN on
+  // anything shorter. The store emits three shapes, so normalise all of them:
+  //   ...+00:00  already fine
+  //   ...+00     DuckDB's cast of a TIMESTAMPTZ, which last_used_at is
+  //   ...        naive, the form AuthStore._age_seconds also defends against
+  // Both edits pin the value to UTC, as the server does. Getting this wrong is
+  // not cosmetic: parsed as local time a naive stamp lands in the future west
+  // of UTC and paints a long-dead collector green, and a NaN draws a live one
+  // as "never".
+  let s = String(v).replace(' ', 'T');
+  const tail = s.slice(10);  // past the date, so any '-' here is an offset
+  if (/\d\d:\d\d(?::\d\d)?(?:\.\d+)?[+-]\d\d$/.test(tail)) s += ':00';
+  else if (!/(?:Z|[+-]\d\d:?\d\d)$/.test(tail)) s += 'Z';
+  const t = Date.parse(s);
   return Number.isNaN(t) ? null : t;
 }
 
