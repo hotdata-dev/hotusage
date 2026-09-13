@@ -2,6 +2,9 @@
 .login-card { background: var(--surface); border: 1px solid var(--border);
               border-radius: 12px; padding: 26px 26px 22px; }
 .brandrow { display: flex; align-items: center; gap: 9px; margin-bottom: 2px; }
+/* the tagline carries the gap above the form; where there is none, the lockup
+   has to carry it instead */
+.brandrow.nosub { margin-bottom: 18px; }
 .brandrow .mark { display: block; flex: 0 0 auto; }
 .login-card h1 { font-size: 19px; font-weight: 650; margin: 0; letter-spacing: -.012em; }
 .login-card .sub { color: var(--ink-2); font-size: 13px; margin-bottom: 18px; }

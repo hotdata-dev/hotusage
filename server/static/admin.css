@@ -39,3 +39,11 @@
    size from first paint, so nothing jumps when the state call lands. */
 .admintable .skel-cell { height: 12px; width: 68%; }
 .admintable td:first-child .skel-cell { width: 88%; }
+
+/* the notice, in its danger form: for controls whose blast radius is a whole
+   organization's data rather than one row */
+.notice.danger { background: var(--danger-bg); border-color: var(--danger-edge);
+                 color: var(--ink); }
+.notice.danger b { color: var(--ink); }
+.cardfoot #dbId { min-width: 260px; flex: 1; max-width: 340px;
+                  font-variant-numeric: tabular-nums; }

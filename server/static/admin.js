@@ -143,6 +143,23 @@ function showLink(link, note) {
   $('#linkValue').select();
 }
 
+function renderDbPicker() {
+  const sel = $('#dbOrg');
+  const keep = sel.value;
+  sel.replaceChildren(...(state.allOrgs || []).map((o) =>
+    el('option', { value: o.slug, text: o.name || o.slug })));
+  sel.value = (state.allOrgs || []).some((o) => o.slug === keep) ? keep : state.org.slug;
+  syncDbId();
+}
+
+// show what the chosen org points at today, so the field is an edit of the
+// current value rather than a blank waiting to be guessed at
+function syncDbId() {
+  const slug = $('#dbOrg').value;
+  const org = (state.allOrgs || []).find((o) => o.slug === slug);
+  $('#dbId').value = (org && org.database_id) || '';
+}
+
 function renderOrgs() {
   const t = tbody('#orgs');
   t.replaceChildren();
@@ -176,7 +193,7 @@ async function load() {
   for (const n of document.querySelectorAll('.sysonly')) n.hidden = !sys;
   renderMembers();
   if (admin) { renderInvites(); renderCollectors(); }
-  if (sys) renderOrgs();
+  if (sys) { renderOrgs(); renderDbPicker(); }
 }
 
 $('#orgSave').addEventListener('click', () => act(async () => {
@@ -209,6 +226,18 @@ $('#orgCreate').addEventListener('click', () => act(async () => {
     $('#orgLinkValue').select();
   }
 }));
+$('#dbOrg').addEventListener('change', syncDbId);
+$('#dbSave').addEventListener('click', () => {
+  const slug = $('#dbOrg').value;
+  const id = $('#dbId').value.trim();
+  const org = (state.allOrgs || []).find((o) => o.slug === slug) || {};
+  if (id === (org.database_id || '')) { showError('that is already its database'); return; }
+  if (!confirm(`Point '${slug}' at ${id}?\n\nIts dashboard and its collectors both `
+             + `switch to that database. Usage already reported stays in `
+             + `${org.database_id || 'the old database'} and will not appear on the `
+             + `dashboard any more.`)) return;
+  act(() => api('/api/admin/set-org-database', { slug, database_id: id }));
+});
 $('#orgLinkCopy').addEventListener('click', () => {
   const f = $('#orgLinkValue');
   f.select();
