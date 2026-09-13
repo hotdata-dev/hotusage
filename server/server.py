@@ -1478,7 +1478,12 @@ class Handler(BaseHTTPRequestHandler):
     _rate_lock = threading.Lock()
     RATE_LIMIT, RATE_WINDOW = 5, 3600
     INVITE_RATE_LIMIT = 30
-    LOGIN_RATE_LIMIT = 30  # FAILED attempts per IP-hour; successes never count
+    # FAILED sign-ins only; successes never count. Two buckets, both consulted:
+    # per (address, IP) so one colleague's typos cannot hold an office egress
+    # IP, and per IP so spraying one password across thousands of addresses
+    # (each of which would mint its own pair bucket) still runs out of road.
+    LOGIN_RATE_LIMIT = 30      # one address from one IP
+    LOGIN_IP_RATE_LIMIT = 300  # everything from one IP; also bounds pair-bucket growth
 
     def _rate_limited(self, bucket, limit=None, record=True):
         # rightmost X-Forwarded-For entry: proxies (App Runner/ALB) append the
@@ -1559,21 +1564,19 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_login(self):
         form = self._read_form()
         nxt = self._safe_next(form.get("next", "/"))
-        # Failures only, keyed per (address, IP): a team behind one NAT signs
-        # in all day and must never spend this budget on success, and one
-        # colleague's typos must not hold the whole office's egress IP -- while
-        # stuffing a single account through that NAT still hits the cap. The
-        # email rides in the bucket name (bounded, so a flood of invented
-        # addresses cannot grow the table faster than the hourly purge drains
-        # it); _rate_limited appends the IP. Checked before the scrypt work so
-        # a limited pair costs nothing; recorded only when the attempt fails.
-        bucket = "login:" + (form.get("email") or "").strip().lower()[:80]
-        if self._rate_limited(bucket, limit=self.LOGIN_RATE_LIMIT, record=False):
+        # Both buckets checked before the scrypt work so a limited caller
+        # costs nothing, and both recorded only when the attempt fails. The
+        # email is truncated into the pair bucket's name; the IP bucket caps
+        # how many such keys one address can mint before the purge drains them.
+        pair = "login:" + (form.get("email") or "").strip().lower()[:80]
+        if self._rate_limited("login", limit=self.LOGIN_IP_RATE_LIMIT, record=False) \
+                or self._rate_limited(pair, limit=self.LOGIN_RATE_LIMIT, record=False):
             self._redirect("/login?err=rate&next=" + quote(nxt))
             return
         token = self.auth.login(form.get("email", ""), form.get("password", ""))
         if not token:
-            self._rate_limited(bucket, limit=self.LOGIN_RATE_LIMIT)
+            self._rate_limited("login", limit=self.LOGIN_IP_RATE_LIMIT)
+            self._rate_limited(pair, limit=self.LOGIN_RATE_LIMIT)
             time.sleep(0.3)  # soften brute force
             self._redirect("/login?err=1&next=" + quote(nxt))
             return
