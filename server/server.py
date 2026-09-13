@@ -2001,6 +2001,7 @@ class Handler(BaseHTTPRequestHandler):
             ".html": "text/html; charset=utf-8",
             ".css": "text/css",
             ".js": "application/javascript",
+            ".svg": "image/svg+xml",
         }.get(os.path.splitext(fp)[1], "application/octet-stream")
         # Assets change only on deploy, and App Runner replaces the instance
         # then, so a short public max-age is safe and spares every navigation

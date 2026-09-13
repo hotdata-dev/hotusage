@@ -5,12 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>hotusage - create an organization</title>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.svg">
   <link rel="stylesheet" href="/static/auth.css">
 </head>
 <body>
   <div class="login-wrap">
     <div class="login-card">
-      <h1>hotusage</h1>
+      <div class="brandrow">
+        <img class="mark" src="/static/icon.svg" width="22" height="22" alt="">
+        <h1>hotusage</h1>
+      </div>
       <div class="sub">Create your organization</div>
       <div class="err" id="err">{{ERROR}}</div>
       <form method="post" action="/register">

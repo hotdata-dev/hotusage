@@ -1,19 +1,20 @@
 .login-wrap { max-width: 360px; margin: 14vh auto 0; padding: 0 20px; }
 .login-card { background: var(--surface); border: 1px solid var(--border);
               border-radius: 12px; padding: 26px 26px 22px; }
-.login-card h1 { font-size: 19px; font-weight: 650; margin: 0 0 2px; }
+.brandrow { display: flex; align-items: center; gap: 9px; margin-bottom: 2px; }
+.brandrow .mark { display: block; flex: 0 0 auto; }
+.login-card h1 { font-size: 19px; font-weight: 650; margin: 0; letter-spacing: -.012em; }
 .login-card .sub { color: var(--ink-2); font-size: 13px; margin-bottom: 18px; }
 .field { margin-bottom: 12px; }
 .field label { display: block; color: var(--ink-2); font-size: 12.5px; margin-bottom: 4px; }
 .field input { width: 100%; box-sizing: border-box; background: var(--page);
                color: var(--ink); border: 1px solid var(--border); border-radius: 8px;
                padding: 9px 11px; font: inherit; }
-.field input:focus { outline: 2px solid var(--s-out); outline-offset: -1px; }
 button.signin { width: 100%; margin-top: 6px; background: var(--ink); color: var(--surface);
                 border: 0; border-radius: 8px; padding: 10px; font: inherit;
                 font-weight: 600; cursor: pointer; }
-.err { display: none; background: rgba(227, 73, 72, 0.12); color: var(--ink);
-       border: 1px solid rgba(227, 73, 72, 0.4); border-radius: 8px;
+.err { display: none; background: var(--danger-bg); color: var(--ink);
+       border: 1px solid var(--danger-edge); border-radius: 8px;
        padding: 8px 11px; font-size: 12.5px; margin-bottom: 12px; }
 .err.show { display: block; }
 .alt { margin-top: 14px; color: var(--ink-2); font-size: 12.5px; text-align: center; }

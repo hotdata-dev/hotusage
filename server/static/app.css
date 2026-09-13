@@ -15,6 +15,11 @@
   --s-cw:           #1baf7a;   /* cache write - slot 3 aqua   */
   --s-cr:           #eda100;   /* cache read  - slot 4 yellow */
   --s-ctx:          #4a3aa7;   /* context line - slot 7 violet */
+  /* danger: errors and destructive actions. Its own hue, deliberately not
+     --s-in -- that orange means input tokens everywhere else. */
+  --danger:         #e34948;
+  --danger-bg:      rgba(227, 73, 72, 0.12);
+  --danger-edge:    rgba(227, 73, 72, 0.40);
   --lift:           brightness(1.06);
 }
 @media (prefers-color-scheme: dark) {
@@ -33,6 +38,9 @@
     --s-cw:         #199e70;
     --s-cr:         #c98500;
     --s-ctx:        #9085e9;
+    --danger:       #f2706f;
+    --danger-bg:    rgba(242, 112, 111, 0.14);
+    --danger-edge:  rgba(242, 112, 111, 0.42);
     --lift:         brightness(1.15);
   }
 }
@@ -44,10 +52,15 @@ body {
   color: var(--ink);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-.wrap { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 20px 20px 48px; }
 
-header.top { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
-header.top h1 { font-size: 20px; font-weight: 650; margin: 0; }
+/* Full-width bar on its own surface, with the contents held to the same 1100px
+   column as the page. The rule under it runs edge to edge; add
+   `position: sticky; top: 0; z-index: 20` here to keep it on screen. */
+header.top { background: var(--surface); border-bottom: 1px solid var(--border); }
+.topin { max-width: 1100px; margin: 0 auto; padding: 10px 20px;
+         display: flex; align-items: center; gap: 12px; }
+header.top h1 { font-size: 19px; font-weight: 650; margin: 0; letter-spacing: -.012em; }
 header.top .sub { color: var(--ink-2); font-size: 13px; }
 header.top .spacer { flex: 1; }
 button.refresh {
@@ -178,7 +191,7 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .modal-row input, .modal-result input { flex: 1; background: var(--page); color: var(--ink);
   border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px; }
 .modal-result input { font-variant-numeric: tabular-nums; }
-.modal-err { background: rgba(227,73,72,.12); border: 1px solid rgba(227,73,72,.4);
+.modal-err { background: var(--danger-bg); border: 1px solid var(--danger-edge);
              border-radius: 8px; padding: 7px 10px; font-size: 12.5px; margin-bottom: 10px; }
 .modal-close { background: transparent; border: 0; color: var(--muted); font: inherit;
                font-size: 12.5px; cursor: pointer; padding: 2px 0; }
@@ -186,13 +199,29 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .modal-or { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
 #teamMaxUses { max-width: 110px; }
 
+/* One focus ring for every control. Only the sign-in form had one, so tabbing
+   through the dashboard's filters or the admin forms showed nothing. No radius
+   here: an outline already follows the element's own corners, and setting one
+   would reshape the element while it happens to be focused. */
+:where(input, select, button, a):focus-visible {
+  outline: 2px solid var(--s-out); outline-offset: 2px;
+}
+.field input:focus-visible { outline-offset: -1px; }
+
 /* ---- shared header nav ---- */
-.brand { text-decoration: none; color: inherit; margin-right: 4px; }
+.brand { display: flex; align-items: center; gap: 9px; flex: 0 0 auto;
+         text-decoration: none; color: inherit; margin-right: 4px; }
+/* flex, not `place-items` on a grid: the SVG is a replaced element and grid
+   puts its start corner on the centre instead of centring it */
+.markwrap { display: flex; flex: 0 0 auto; }
+.mark { display: block; }
 .navlinks { display: flex; gap: 2px; }
 .navlink { color: var(--ink-2); text-decoration: none; font-size: 13px;
            padding: 5px 10px; border-radius: 7px; }
-.navlink:hover { color: var(--ink); background: var(--surface); }
-.navlink.current { color: var(--ink); background: var(--surface);
+/* --page, not --surface: the header bar is --surface now, so a --surface chip
+   would be invisible against it */
+.navlink:hover { color: var(--ink); background: var(--page); }
+.navlink.current { color: var(--ink); background: var(--page);
                    border: 1px solid var(--border); padding: 4px 9px; }
 .accountwrap { position: relative; }
 .account { display: flex; align-items: center; gap: 6px; background: var(--surface);
