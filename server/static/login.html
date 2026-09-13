@@ -5,12 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>hotusage - sign in</title>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.svg">
   <link rel="stylesheet" href="/static/auth.css">
 </head>
 <body>
   <div class="login-wrap">
     <div class="login-card">
-      <h1>hotusage</h1>
+      <div class="brandrow">
+        <img class="mark" src="/static/icon.svg" width="22" height="22" alt="">
+        <h1>hotusage</h1>
+      </div>
       <div class="sub">AI coding-agent token &amp; context usage</div>
       <div class="err" id="err">Wrong email or password.</div>
       <form method="post" action="/login">
