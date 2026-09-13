@@ -824,6 +824,51 @@ class AuthStore:
             # from the cache or the old name lingers until they expire
             self.token_cache.clear()
 
+    # hotdata ids are opaque but well-shaped; refusing anything else keeps a
+    # typo from repointing an org at nothing
+    DB_ID_RE = re.compile(r"^dbid[a-z0-9]{12,60}$")
+
+    def set_org_database(self, slug, database_id):
+        """Point an org at a different usage database, overriding the one
+        provisioned for it. Returns the id it replaced.
+
+        Isolation between organizations IS this column -- the dashboard reads
+        one database, not a filtered view of many -- so an id already claimed
+        by another org is refused rather than quietly shared. The target is
+        reached before the switch is recorded, so an unreachable id fails
+        without leaving the org pointing at nothing."""
+        database_id = (database_id or "").strip()
+        if not self.DB_ID_RE.match(database_id):
+            raise ValueError("that does not look like a hotdata database id")
+        rows = self.sysdb.rows(f"SELECT slug, name, database_id, created_at "
+                               f"FROM {SYS}.public.orgs")
+        row = next((r for r in rows if r["slug"] == slug), None)
+        if not row:
+            raise ValueError("no such organization")
+        if row["database_id"] == database_id:
+            return database_id
+        clash = next((r for r in rows
+                      if r["database_id"] == database_id and r["slug"] != slug), None)
+        if clash:
+            raise ValueError(f"'{clash['slug']}' already reports into that database; "
+                             f"two organizations sharing one is what org isolation "
+                             f"prevents")
+        try:
+            self.pool.get(database_id).ensure_schema_and_tables(USAGE_TABLES)
+        except Exception as e:
+            raise ValueError(f"could not prepare that database: {e}")
+        self.sysdb.load("orgs", [{"slug": row["slug"], "name": row["name"],
+                                  "database_id": database_id,
+                                  "created_at": str(row["created_at"])}], "upsert")
+        with self.lock:
+            self.org_cache.pop(slug, None)
+            # both caches carry a database id for a signed-in viewer or a
+            # reporting collector, so a stale entry would keep writing to the
+            # database this call just replaced
+            self.route_cache.clear()
+            self.token_cache.clear()
+        return row["database_id"]
+
     def revoke_any_invite(self, token, org_slug):
         """Revoke an invite of either kind, but only one belonging to `org_slug`."""
         for table in ("invites", "team_invites"):
@@ -1557,8 +1602,11 @@ class Handler(BaseHTTPRequestHandler):
                 action = path[len("/api/admin/"):]
                 target = (body.get("email") or "").strip().lower()
 
-                # platform actions: gated on system admin, not org admin
-                if action in ("create-org", "delete-org"):
+                # platform actions: gated on system admin, not org admin.
+                # set-org-database belongs here rather than with the org-admin
+                # actions: an org admin who pointed their org at another org's
+                # database would be reading that org's usage.
+                if action in ("create-org", "delete-org", "set-org-database"):
                     if not self.auth.is_system_admin(viewer["email"]):
                         self._json({"error": "only a system admin can manage organizations"}, 403)
                         return
@@ -1578,11 +1626,16 @@ class Handler(BaseHTTPRequestHandler):
                             proto, host = self._public_origin()
                             out["invite_link"] = f"{proto}://{host}/invite/{token}"
                         self._json(out)
-                    else:
+                    elif action == "delete-org":
                         if body.get("slug") == viewer["org_slug"]:
                             raise ValueError("you cannot delete your own organization")
                         db = self.auth.delete_empty_org(body.get("slug", ""))
                         self._json({"ok": True, "database_kept": db})
+                    else:
+                        previous = self.auth.set_org_database(
+                            (body.get("slug") or "").strip(),
+                            body.get("database_id", ""))
+                        self._json({"ok": True, "previous": previous})
                     return
 
                 if not self.auth.is_admin(viewer["email"], org):
