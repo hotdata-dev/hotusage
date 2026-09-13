@@ -1,252 +1,146 @@
 # hotusage
 
 Company-wide usage analytics for AI coding agents (Claude Code, Codex,
-OpenCode). Per-user collectors feed a central server; everything is stored in
-hotdata — a system database for accounts, plus one dedicated database per
-organization:
+OpenCode). A small collector runs on each person's machine and reports their
+local agent history to a central server; the dashboard shows sessions, tokens,
+and estimated cost for your whole organization — by user, tool, project, and
+date.
 
-```
-[collector]  menu bar app / daemon, one per user (separate repo: hotusage-collector)
-     |  POST /ingest  (changed sessions only, Bearer token)
-     v
-[server] --- accounts/auth --> hotdata `hotusage-system` db (orgs, users, sessions)
-     |
-     +------ usage rows ------> one hotdata db PER ORGANIZATION (routed by the
-     |                          reporting user's org; provisioned on `addorg`)
-     +------ dashboard: each viewer reads only their org's database
-```
+Not collected: **Cursor** and **Gemini CLI** — neither stores token counts
+locally, so there is nothing to report.
 
-- **server/** — receives ingests and upserts them into the reporting user's
-  org database (sdk-python parquet loads with key-based upsert; no local
-  database anywhere). Serves the login-gated admin dashboard at `/`, which
-  reads the viewer's org database with user / tool / project / date filters.
-- **collector** — native Rust menu bar/daemon agent, one per user, in its own
-  repo (`hotusage-collector`).
+All data lives in [hotdata](https://hotdata.dev): one system database for
+accounts, plus one dedicated database per organization, so each org's usage is
+physically isolated.
 
-Not collected: **Cursor** (stores no token counts locally; usage is
-server-side at cursor.com) and **Gemini CLI** (keeps no usage history).
+## For team members
 
-## Server setup
-
-```bash
-uv venv && uv pip install hotdata duckdb           # once
-export HOTUSAGE_INGEST_TOKEN=<shared secret>       # unset = dev mode (accepts all)
-export HOTDATA_API_KEY=<workspace key>             # or ~/.hotdata/hotdata.json
-.venv/bin/python server/server.py --host 0.0.0.0 --port 8377
-```
-
-Flags: `--system-database <dbid>` (accounts db, default in `core.py`), `--ttl`
-(dashboard read cache seconds, default 60). Org usage databases are resolved
-at runtime from the system db's `orgs.database_id`. Run `--host 0.0.0.0` only
-behind a VPN (e.g. tailscale) or reverse proxy.
-
-First boot seeds org `hotdata` with user `eddie@hotdata.dev` and prints a
-generated initial password once.
-
-## Self-serve registration and invites
-
-Signing up is two steps, and the account is the first one. `/register` (linked
-from the login page) takes an email and a password and creates the account
-alone — no org, no database. Signed in but belonging to nowhere, you land on
-`/setup`, which asks for an organization name and provisions its dedicated
-database; you become its first member and its admin.
-
-Splitting it that way means a failure while provisioning costs a database, not
-a signup, and that someone invited to an existing org never creates one at all:
-opening an invite link adds the account to that org and `/setup` stops asking.
-Every page that reads or writes org data redirects there until an org exists
-(the API answers 409), so there is no half-signed-in state to handle.
-
-Slugs are derived from the org name; a taken slug is refused — joining an
-existing org goes through invites, never through guessing its slug.
-
-Admins grow an org from the **Organization** page, which mints two kinds of
-link. Nothing is emailed yet — you share the link yourself. Unauthenticated
-register/invite endpoints are rate limited (5/hour per IP), and org creation
-has its own bucket so a team behind one NAT does not spend the registration
-budget on it.
-
-- **Single-use invite** — enter one teammate's email; the link is bound to
-  that address and valid 7 days. It dies the moment it is used.
-- **Team link** — reusable: anyone who opens it picks their own email and
-  password and joins your org. Optionally restrict it to an email domain
-  (`acme.com`) and/or a maximum number of uses (blank/0 = unlimited);
-  default expiry is 30 days, 90 max. Restrict it to your domain unless you
-  are sharing it privately — anyone holding an unrestricted link can join
-  and read the org's usage.
-
-The use counter on a team link is best-effort: simultaneous joins can push it
-a use or two past the cap. The domain restriction is the real control.
-
-Outstanding links, and revoking one:
-
-```bash
-.venv/bin/python server/server.py listinvites          # both kinds, with uses + days left
-.venv/bin/python server/server.py revokeinvite <token> # kills it immediately
-```
-
-## Organization page
-
-`/admin` (linked from the header) is the self-serve version of the admin CLI:
-rename the org, see every member, invite people, and revoke invites or
-signed-in collectors. Whoever creates an organization administers it; admins
-can promote or demote anyone, and the last admin cannot be demoted or removed.
-
-Ordinary members see the roster but no invite tokens and no management
-controls — the server enforces this, not the page. From the CLI:
-
-```bash
-.venv/bin/python server/server.py makeadmin jane@acme.com
-.venv/bin/python server/server.py unadmin jane@acme.com
-```
-
-## System admins (platform operators)
-
-Creating or deleting organizations provisions or strands hotdata databases,
-so it is a platform power, not an org power. System admins get an **All
-organizations** card on `/admin`: every org with member counts, a create form
-(optionally with an owner email — that mints a single-use invite whose
-acceptor, as the org's first member, becomes its admin), and delete for empty
-orgs (the database is kept; destroying data stays CLI-only). The first member of an
-empty org becomes its admin automatically; an org that loses its last admin
-is recovered with `makeadmin`, never by whoever joins next.
-
-```bash
-.venv/bin/python server/server.py makesysadmin eddie@hotdata.dev
-.venv/bin/python server/server.py unsysadmin jane@acme.com
-```
-
-## Managing organizations
-
-A user can belong to several organizations; `users.org_slug` is the ACTIVE
-one — the org their collector reports into and their dashboard shows — and
-the account menu switches it when they hold more than one membership.
-Inviting an already-registered address adds a membership (accepted from
-their signed-in session, no new password) instead of erroring. Each organization owns a
-dedicated hotdata database — isolation between orgs is physical, not a query
-filter. All admin commands run against the system database and take effect
-immediately (the server picks changes up within its ~60s caches).
-
-```bash
-.venv/bin/python server/server.py listorgs                       # slug, user count, database id
-.venv/bin/python server/server.py addorg acme --name "Acme Inc"  # provisions the org's database
-.venv/bin/python server/server.py delorg acme                    # refuses while users remain
-.venv/bin/python server/server.py delorg acme --delete-database  # also destroys its usage data
-```
-
-`addorg` creates the org's hotdata database (catalog `hotusage`), declares the
-usage tables with their upsert keys, and records the database id on the org
-row. `delorg` keeps the database unless you pass `--delete-database`.
-
-## Collector sign-in
-
-Teammates do not need the shared ingest token any more. In the collector's menu
-bar, **Sign In...** opens the browser, they log in (or accept an invite first),
-and confirm that the code on the approval page matches the one in the menu. The
-server then mints a collector token bound to their account and the collector
-stores it. Headless machines run `hotusage-collector signin`, which prints the
-same URL and code.
-
-A collector token *identifies* its owner: ingest authenticated with one reports
-as that account no matter what address the payload claims. The shared
-`HOTUSAGE_INGEST_TOKEN` still works for existing installs, but it only admits —
-anyone holding it can report as any registered colleague — so prefer sign-in.
-
-**Sign Out** in the collector's menu (or `hotusage-collector signout`) revokes
-that machine's token and clears it locally; other machines stay signed in.
-
-```bash
-.venv/bin/python server/server.py listtokens            # who is signed in, from where, last used
-.venv/bin/python server/server.py revoketoken <token>   # or: --user <email> for all of theirs
-```
-
-`last used` is refreshed at most hourly per token — enough to spot a machine
-that has stopped reporting, without a write on every ingest.
-
-## Managing users
-
-```bash
-.venv/bin/python server/server.py listusers --org all            # everyone (or --org <slug>)
-.venv/bin/python server/server.py adduser jane@acme.com --org acme   # prints initial password
-.venv/bin/python server/server.py resetpw jane@acme.com              # prints new password
-.venv/bin/python server/server.py deluser jane@acme.com              # + revokes their logins
-```
-
-Onboarding a teammate is an invite from the Organization page, not these
-commands: they open the link, choose a password, run the collector installer,
-and it signs them in. The CLI path exists for scripted setup and recovery —
-`adduser` prints an initial password, and there is no self-serve reset.
-
-**Ingest is rejected (403) for emails that are not registered users** — there
-is no org database to route them to. The collector surfaces the error in its
-menu status; add the user and the next sync succeeds. Deleting a user stops
-future ingest and revokes logins, but their already-ingested rows stay in the
-org database.
-
-## System administration
-
-- **Stores.** Everything lives in one hotdata workspace (`core.py`):
-  - `hotusage-system` — `orgs` (slug, name, `database_id`), `users` (scrypt
-    password hashes), `auth_sessions` (login tokens). Private operational
-    data; keep out of analytics and don't widen query access to this database.
-  - one usage database per org (catalog `hotusage`): `sessions`, `requests`,
-    `daily_usage`, keyed by user_email + session_id (+ seq / + day). Writes
-    are idempotent key-based upserts, so collectors can safely re-send.
-  - Each database documents itself:
-    `hotdata databases context show DATAMODEL --database <id>`.
-- **Secrets.** Collectors should sign in (per-user tokens, revocable from the
-  Organization page). `HOTUSAGE_INGEST_TOKEN` remains as a shared fallback —
-  it only admits, so anyone holding it can report as any registered
-  colleague; rotate by restarting the server with a new value. The hotdata
-  workspace API key comes from `HOTUSAGE_HOTDATA_API` / `HOTDATA_API_KEY` or
-  `~/.hotdata/hotdata.json`.
-- **Sessions.** Dashboard logins last 30 days; `deluser` revokes a user's
-  sessions, and expired sessions are purged opportunistically on login.
-  Rotating a password does not revoke existing sessions — delete the user's
-  rows from `auth_sessions` if that matters.
-- **Health.** `/api/status` (authenticated) returns the viewer's org database
-  id. Server logs (stdout) show every ingest with its routed org and any
-  hotdata errors.
-- **Dashboard payload.** `/api/data` returns the org's sessions and daily
-  rows. It is gzipped (~5x smaller) and the encoded bytes are cached per
-  viewer and window beside the rows, so a warm load is a dict lookup.
-  Nothing in front of the server compresses for us: the App Runner
-  hostnames are DNS-only, not proxied.
-  The first load asks for `?days=30`; picking a wider range re-fetches, and
-  `?days=all` (or no parameter) returns everything. `cwd` travels with
-  `/api/session/<id>`, not with every row, since only the expanded session
-  shows it.
-- **Cold starts.** Each org database has its own query worker that scales to
-  zero; the first dashboard load or ingest for an idle org takes ~10-20s while
-  it wakes. Normal, not a hang.
-- **Backups / experiments.** hotdata database forks are cheap deep copies:
-  `hotdata databases fork <dbid> --name <label>` snapshots an org database (or
-  the system database) before risky changes.
-- **Costs shown are estimates** at provider API list prices (rate table in
-  `core.py` — update it when providers reprice; cache read 0.1x input for
-  Anthropic, model-specific cached rates for OpenAI). Subscription plans don't
-  bill per token. Unknown models price at $0.
-
-## Collector
-
-See the `hotusage-collector` repo (Rust; macOS menu bar, Windows tray, Linux
-daemon). One line installs it, registers a login service, and signs the
-person in:
+Your admin sends you an invite link (or a reusable team link). Open it, pick a
+password, and you're in. Then install the collector:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-collector/main/install.sh | sh
 ```
 
-Config lives in `~/.hotusage/collector.json` (mode 0600 — it holds a token);
-`collector-state.json` tracks per-session fingerprints so only changed
-sessions are re-sent.
+That one line installs the collector (macOS menu bar, Windows tray, or Linux
+daemon), registers it as a login service, and walks you through sign-in: your
+browser opens, you confirm the code shown in the menu, and the collector starts
+reporting as you. Headless machines run `hotusage-collector signin` instead.
 
-## Notes
+From then on it syncs automatically — only changed sessions are re-sent. Open
+the dashboard at your server's URL to see your team's usage. **Sign Out** in
+the collector menu (or `hotusage-collector signout`) stops that machine from
+reporting; other machines stay signed in.
 
-- Claude usage is deduped by API `message.id`; Codex `token_count` events are
-  cumulative so sums use deltas (`input_tokens` includes cached — split into
-  uncached input + cache read); OpenCode comes from its sqlite message log.
-- "Context" per request = what the model saw (input + cache read + cache write
-  for Claude/OpenCode; last `input_tokens` for Codex).
-- Timestamps: parquet is written with DuckDB pinned to `SET timezone='UTC'` —
-  without it, naive-timestamp casts shift by the local UTC offset on load.
+## For organization admins
+
+Everything is on the **Organization** page (`/admin`, linked from the header):
+
+- **Invite people.** Two kinds of link, shared by you (nothing is emailed):
+  - *Single-use invite* — bound to one email address, valid 7 days, dies when
+    used.
+  - *Team link* — reusable: anyone who opens it joins your org with their own
+    email and password. You can restrict it to an email domain (`acme.com`)
+    and/or cap its uses; default expiry 30 days, 90 max. **Restrict it to your
+    domain unless sharing privately** — anyone holding an open link can join
+    and read your org's usage.
+- **Manage members.** See everyone, promote or demote admins (the last admin
+  can't be demoted), and remove people. Removing someone revokes their logins
+  and collectors; their already-reported usage stays.
+- **Revoke access.** Outstanding invite links and signed-in collectors are
+  listed with revoke buttons. The collectors list shows each machine and when
+  it last reported — handy for spotting one that stopped.
+- **Rename the org.**
+
+A person can belong to several organizations; the account menu switches which
+one is *active* (the org their dashboard shows and their collector reports
+into). Inviting an already-registered address just adds a membership.
+
+## Running the server
+
+```bash
+uv venv && uv pip install hotdata duckdb
+export HOTDATA_API_KEY=<workspace key>             # or ~/.hotdata/hotdata.json
+export HOTUSAGE_INGEST_TOKEN=<shared secret>       # unset = dev mode (accepts all)
+.venv/bin/python server/server.py --host 0.0.0.0 --port 8377
+```
+
+Or use the Dockerfile. Run `--host 0.0.0.0` only behind a VPN (e.g. tailscale)
+or reverse proxy. First boot seeds an initial admin user and prints its
+generated password once.
+
+Signing up is self-serve from the login page: `/register` creates the account,
+then `/setup` asks for an organization name and provisions its database — you
+become that org's first member and admin. Anyone invited to an existing org
+skips `/setup` entirely. Registration and invite endpoints are rate limited.
+
+`/healthz` answers liveness checks; `/healthz?deep=1` also reports whether the
+hotdata backend is reachable.
+
+**Note on cold starts:** an idle org's database worker scales to zero, so the
+first dashboard load or ingest after a quiet spell can take ~10–20 seconds.
+Normal, not a hang.
+
+## Platform operators (system admins)
+
+Creating or deleting organizations provisions or strands hotdata databases, so
+it's a platform power, distinct from org admin. System admins get an **All
+organizations** card on `/admin`: every org with member counts, a create form
+(optionally with an owner email, which mints an invite whose acceptor becomes
+the org's admin), and delete for empty orgs. Grant the role from the CLI:
+
+```bash
+.venv/bin/python server/server.py makesysadmin eddie@hotdata.dev
+```
+
+## CLI reference
+
+Everything on the Organization page has a CLI equivalent, for scripted setup
+and recovery. All commands run against the system database and take effect
+within the server's ~60s caches.
+
+```bash
+# organizations
+server.py listorgs                        # slug, user count, database id
+server.py addorg acme --name "Acme Inc"   # provisions the org's database
+server.py delorg acme                     # refuses while users remain; keeps the database
+server.py delorg acme --delete-database   # also destroys its usage data
+
+# users
+server.py listusers --org all             # everyone (or --org <slug>)
+server.py adduser jane@acme.com --org acme   # prints initial password
+server.py resetpw jane@acme.com              # prints new password
+server.py deluser jane@acme.com              # + revokes their logins and collectors
+server.py makeadmin jane@acme.com            # org admin (unadmin to demote)
+server.py makesysadmin jane@acme.com         # platform operator (unsysadmin to revoke)
+
+# invites and collectors
+server.py listinvites                     # both kinds, with uses + days left
+server.py revokeinvite <token>
+server.py listtokens                      # who is signed in, from where, last used
+server.py revoketoken <token>             # or: --user <email> for all of theirs
+```
+
+There is no self-serve password reset — `resetpw` is the recovery path. An org
+that loses its last admin is recovered with `makeadmin`, never by whoever joins
+next.
+
+## Good to know
+
+- **Costs are estimates** at provider API list prices (Anthropic cache reads
+  at 0.1× input; OpenAI cached input discounted per model). Subscription plans
+  don't bill per token; unknown models price at $0. The rate table lives in
+  `core.py` — update it when providers reprice.
+- **Usage from unregistered emails is rejected** (403) — the collector shows
+  the error in its menu; once the person is invited, the next sync succeeds.
+- **Collector tokens identify their owner**: ingest signed in as someone
+  reports as that account, whatever the payload claims. The shared
+  `HOTUSAGE_INGEST_TOKEN` still works but only admits — anyone holding it can
+  report as any registered colleague — so prefer sign-in.
+- **Backups**: hotdata forks are cheap deep copies —
+  `hotdata databases fork <dbid> --name <label>` snapshots an org database (or
+  the system database) before risky changes.
+- **Collector internals** live in the
+  [`hotusage-collector`](https://github.com/hotdata-dev/hotusage-collector)
+  repo (Rust). Its config is `~/.hotusage/collector.json` (mode 0600 — it
+  holds a token).
