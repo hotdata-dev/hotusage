@@ -312,7 +312,8 @@ def gather(tasks=None, /, **thunks):
     product of the two fan-outs -- fine against an API that does not
     throttle concurrent queries, worth revisiting if that changes. The
     generated client's connection_pool_maxsize was 50 when measured against
-    hotdata 0.33.0 (2026-09-13), so a fan-out of this shape reuses
+    the hotdata python package 0.10.0 (2026-09-13; the CLI is versioned
+    separately and is not this), so a fan-out of this shape reuses
     connections rather than reopening them; a bound here would only be
     needed if a single request's fan-out approached that. The Dockerfile
     pins no version, so re-measure before relying on the number."""
