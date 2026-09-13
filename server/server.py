@@ -311,9 +311,11 @@ def gather(tasks=None, /, **thunks):
     A thunk may gather() in turn, so the queries in flight can reach the
     product of the two fan-outs -- fine against an API that does not
     throttle concurrent queries, worth revisiting if that changes. The
-    generated client's connection_pool_maxsize is 50, so a fan-out of this
-    shape reuses connections rather than reopening them; a bound here would
-    only be needed if a single request's fan-out approached that."""
+    generated client's connection_pool_maxsize was 50 when measured against
+    hotdata 0.33.0 (2026-09-13), so a fan-out of this shape reuses
+    connections rather than reopening them; a bound here would only be
+    needed if a single request's fan-out approached that. The Dockerfile
+    pins no version, so re-measure before relying on the number."""
     work = {**(tasks or {}), **thunks}
     if not work:
         return {}
