@@ -32,8 +32,11 @@
     </div>
   </div>
   <script>
-    if (new URLSearchParams(location.search).get('err')) {
-      document.getElementById('err').classList.add('show');
+    var err = new URLSearchParams(location.search).get('err');
+    if (err) {
+      var box = document.getElementById('err');
+      if (err === 'rate') box.textContent = 'Too many failed attempts; try again later.';
+      box.classList.add('show');
     }
   </script>
 </body>
