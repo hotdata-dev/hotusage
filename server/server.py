@@ -427,12 +427,18 @@ class AuthStore:
             self.route_cache.pop(email, None)
 
     def set_password(self, email, password):
-        u = self.get_user(email)
-        if not u:
+        # read every column, as switch_org does: the upsert must carry the whole
+        # row, and stamping created_at with "now" would rewrite the join date
+        rows = self.sysdb.rows(f"SELECT email, org_slug, created_at "
+                               f"FROM {SYS}.public.users "
+                               f"WHERE email = {sql_str(email.strip().lower())}")
+        if not rows:
             raise ValueError(f"no such user: {email}")
-        self.sysdb.load("users", [{"email": u["email"], "password_hash": hash_password(password),
-                                   "org_slug": u["org_slug"],
-                                   "created_at": datetime.now(timezone.utc).isoformat()}],
+        row = rows[0]
+        self.sysdb.load("users", [{"email": row["email"],
+                                   "password_hash": hash_password(password),
+                                   "org_slug": row["org_slug"],
+                                   "created_at": str(row["created_at"])}],
                         "upsert")
 
     def login(self, email, password):
