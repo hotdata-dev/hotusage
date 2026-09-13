@@ -109,13 +109,12 @@
 
   // The header is a full-width bar; its contents stay on the page's 1100px
   // column, so the rule under it runs edge to edge while nothing shifts.
+  // Refresh is NOT here: it belongs beside the "fetched at" note it updates,
+  // which lives at the right edge of the dashboard's filter row (index.html).
   header.replaceChildren(node('div', { class: 'topin' },
     brand,
     links,
     node('span', { class: 'spacer' }),
-    ...(current === 'dashboard'
-      ? [node('button', { class: 'refresh', id: 'refresh', type: 'button', text: 'Refresh' })]
-      : []),
     node('div', { class: 'accountwrap' }, button, menu)));
 
   // pages call this once they know who is signed in

@@ -32,8 +32,20 @@ function clearPlaceholders() {
   for (const r of document.querySelectorAll('.admintable tr.placeholder')) r.remove();
 }
 
-function showError(msg) {
-  const box = $('#err');
+// An error belongs beside the control that raised it: the banner at the top of
+// the page is off-screen by the time someone is acting on the third card.
+// '#err' remains the fallback, and is where a failed page load reports.
+const ERROR_BOXES = ['#err', '#inviteErr', '#orgErr', '#dbErr'];
+
+function clearErrors() {
+  for (const sel of ERROR_BOXES) {
+    const box = $(sel);
+    if (box) { box.textContent = ''; box.hidden = true; }
+  }
+}
+
+function showError(msg, boxSel) {
+  const box = (boxSel && $(boxSel)) || $('#err');
   box.textContent = msg;
   box.hidden = !msg;
   if (msg) clearPlaceholders();
@@ -52,7 +64,7 @@ async function api(path, body) {
 }
 
 const day = (v) => (v ? String(v).slice(0, 10) : '-');
-const minute = (v) => (v ? String(v).slice(0, 16).replace('T', ' ') : 'never');
+const stampText = (v) => String(v).slice(0, 16).replace('T', ' ');
 
 function row(...cells) {
   return el('tr', {}, ...cells.map((c) =>
@@ -64,11 +76,63 @@ function action(label, danger, onclick) {
     { class: danger ? 'linkbtn danger' : 'linkbtn', type: 'button', text: label, onclick });
 }
 
-async function act(fn) {
-  showError('');
-  try { await fn(); await load(); } catch (e) { showError(e.message); }
+async function act(fn, boxSel) {
+  clearErrors();
+  try { await fn(); await load(); } catch (e) { showError(e.message, boxSel); }
 }
 
+// An empty table is a header row over nothing. Hide the table and show one
+// line that says what would fill it -- the same shape the dashboard uses.
+function setEmpty(tableSel, emptySel, isEmpty) {
+  $(tableSel).hidden = isEmpty;
+  $(emptySel).hidden = !isEmpty;
+}
+
+// ---------------------------------------------------------------------------
+// State you can read without reading: role chips and collector liveness dots.
+// ---------------------------------------------------------------------------
+const DAY_MS = 86400000;
+
+const roleChip = (isAdmin) => el('span', {
+  class: isAdmin ? 'chip admin' : 'chip', text: isAdmin ? 'Admin' : 'Member',
+});
+
+function stampMs(v) {
+  if (!v) return null;
+  // The store hands these back as ISO strings, and not always with an offset --
+  // AuthStore._age_seconds defends against the naive form for the same reason.
+  // Date.parse reads a naive string as LOCAL time, so west of UTC the stamp
+  // lands in the future and a long-dead collector would show a green dot.
+  // Treat "no offset" as UTC, exactly as the server does.
+  const s = String(v).replace(' ', 'T');
+  const t = Date.parse(/(?:Z|[+-]\d\d:?\d\d)$/.test(s) ? s : s + 'Z');
+  return Number.isNaN(t) ? null : t;
+}
+
+function ago(ms) {
+  const s = Math.max(0, Date.now() - ms) / 1000;
+  if (s < 3600) return Math.max(1, Math.round(s / 60)) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+
+// Green while it is still reporting, amber once it has gone quiet for a day,
+// hollow if it never reported at all. The server refreshes this stamp at most
+// hourly per token, so the exact value rides in the title rather than the cell.
+function syncCell(v) {
+  const ms = stampMs(v);
+  const cls = ms === null ? 'never' : (Date.now() - ms < DAY_MS ? 'ok' : 'stale');
+  const title = ms === null
+    ? 'this collector has not reported yet'
+    : `last reported ${stampText(v)} UTC (this stamp refreshes at most hourly)`;
+  return el('span', { class: 'sync', title },
+    el('span', { class: 'dot ' + cls }),
+    el('span', { text: ms === null ? 'never' : ago(ms) }));
+}
+
+// ---------------------------------------------------------------------------
+// Renders
+// ---------------------------------------------------------------------------
 function renderMembers() {
   const t = tbody('#members');
   t.replaceChildren();
@@ -90,7 +154,7 @@ function renderMembers() {
     }
     t.append(row(
       m.email + (self ? ' (you)' : ''),
-      m.is_admin ? 'Admin' : 'Member',
+      roleChip(m.is_admin),
       day(m.created_at),
       controls));
   }
@@ -102,10 +166,7 @@ function renderInvites() {
   const t = tbody('#invites');
   t.replaceChildren();
   const invites = state.invites || [];
-  if (!invites.length) {
-    t.append(row('No pending invites', '', '', '', ''));
-    return;
-  }
+  setEmpty('#invites', '#invitesEmpty', !invites.length);
   for (const i of invites) {
     const who = i.kind === 'single' ? i.email : (i.domain ? '@' + i.domain : 'any address');
     const uses = i.kind === 'single' ? 'single use'
@@ -122,25 +183,38 @@ function renderCollectors() {
   const t = tbody('#collectors');
   t.replaceChildren();
   const rows = state.collectors || [];
-  if (!rows.length) {
-    t.append(row('Nobody has signed in a collector yet', '', '', '', ''));
-    return;
-  }
+  setEmpty('#collectors', '#collectorsEmpty', !rows.length);
   for (const c of rows) {
     const revoke = action('Revoke', true, () => {
       if (!confirm(`Revoke the collector on ${c.hostname || 'that machine'}? It stops reporting.`)) return;
       act(() => api('/api/admin/revoke-token', { token: c.token }));
     });
-    t.append(row(c.user_email, c.hostname || '?', day(c.created_at),
-      minute(c.last_used_at), el('div', { class: 'rowactions' }, revoke)));
+    // when it signed in answers no routine question; last sync does, so the
+    // join date rides along as the machine's title
+    const machine = el('span', {
+      text: c.hostname || '?', title: 'signed in ' + day(c.created_at),
+    });
+    t.append(row(c.user_email, machine, syncCell(c.last_used_at),
+      el('div', { class: 'rowactions' }, revoke)));
   }
 }
 
-function showLink(link, note) {
-  $('#linkValue').value = link;
-  $('#linkOut').hidden = false;
-  $('#linkValue').title = note || '';
-  $('#linkValue').select();
+function renderOrgs() {
+  const t = tbody('#orgs');
+  t.replaceChildren();
+  const orgs = state.allOrgs || [];
+  for (const o of orgs) {
+    const controls = el('div', { class: 'rowactions' });
+    if (!o.members && o.slug !== state.org.slug) {
+      controls.append(action('Delete', true, () => {
+        if (!confirm(`Delete '${o.slug}'? Its database is kept.`)) return;
+        act(() => api('/api/admin/delete-org', { slug: o.slug }), '#orgErr');
+      }));
+    }
+    t.append(row(
+      o.name + (o.slug === state.org.slug ? ' (yours)' : ''),
+      o.slug, String(o.members), day(o.created_at), controls));
+  }
 }
 
 function renderDbPicker() {
@@ -160,22 +234,50 @@ function syncDbId() {
   $('#dbId').value = (org && org.database_id) || '';
 }
 
-function renderOrgs() {
-  const t = tbody('#orgs');
-  t.replaceChildren();
-  const orgs = state.allOrgs || [];
-  for (const o of orgs) {
-    const controls = el('div', { class: 'rowactions' });
-    if (!o.members && o.slug !== state.org.slug) {
-      controls.append(action('Delete', true, () => {
-        if (!confirm(`Delete '${o.slug}'? Its database is kept.`)) return;
-        act(() => api('/api/admin/delete-org', { slug: o.slug }));
-      }));
-    }
-    t.append(row(
-      o.name + (o.slug === state.org.slug ? ' (yours)' : ''),
-      o.slug, String(o.members), day(o.created_at), controls));
+// ---------------------------------------------------------------------------
+// Invite dialog: both link kinds behind one action.
+// ---------------------------------------------------------------------------
+let inviteKind = 'single';
+
+function setInviteKind(kind) {
+  inviteKind = kind;
+  for (const b of document.querySelectorAll('#inviteKind button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.kind === kind));
   }
+  $('#invitePaneSingle').hidden = kind !== 'single';
+  $('#invitePaneTeam').hidden = kind === 'single';
+  $('#linkOut').hidden = true;
+  clearErrors();
+  (kind === 'single' ? $('#inviteEmail') : $('#teamDomain')).focus();
+}
+
+// aria-modal on a plain div does not stop Tab from reaching the page behind the
+// backdrop, so the page itself goes inert while the dialog is up: without it a
+// keyboard user tabs past Create link straight into the nav and the roster,
+// both of them covered.
+const BEHIND = () => [document.querySelector('header.top'), document.querySelector('.wrap')];
+
+function openInvite() {
+  clearErrors();
+  $('#linkOut').hidden = true;
+  $('#inviteEmail').value = '';
+  $('#inviteModal').hidden = false;
+  for (const n of BEHIND()) if (n) n.inert = true;
+  (inviteKind === 'single' ? $('#inviteEmail') : $('#teamDomain')).focus();
+}
+
+function closeInvite() {
+  $('#inviteModal').hidden = true;
+  // clear inert BEFORE handing focus back, or the button cannot take it
+  for (const n of BEHIND()) if (n) n.inert = false;
+  $('#inviteOpen').focus();
+}
+
+function showLink(link, note) {
+  $('#linkValue').value = link;
+  $('#linkOut').hidden = false;
+  $('#linkValue').title = note || '';
+  $('#linkValue').select();
 }
 
 async function load() {
@@ -196,22 +298,46 @@ async function load() {
   if (sys) { renderOrgs(); renderDbPicker(); }
 }
 
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
 $('#orgSave').addEventListener('click', () => act(async () => {
   await api('/api/admin/rename-org', { name: $('#orgName').value.trim() });
 }));
-$('#inviteCreate').addEventListener('click', () => act(async () => {
-  const r = await api('/api/invite', { email: $('#inviteEmail').value.trim() });
-  $('#inviteEmail').value = '';
-  showLink(r.link, `single use, expires in ${r.expires_days} days`);
-}));
-$('#teamCreate').addEventListener('click', () => act(async () => {
-  const r = await api('/api/invite', {
-    kind: 'team',
-    domain: $('#teamDomain').value.trim(),
-    max_uses: Number($('#teamMaxUses').value) || 0,
-  });
-  showLink(r.link, `reusable, expires in ${r.expires_days} days`);
-}));
+
+$('#inviteOpen').addEventListener('click', openInvite);
+$('#inviteCancel').addEventListener('click', closeInvite);
+$('#inviteKind').addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (btn) setInviteKind(btn.dataset.kind);
+});
+$('#inviteModal').addEventListener('click', (e) => {
+  if (e.target === $('#inviteModal')) closeInvite();  // the backdrop, not the card
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#inviteModal').hidden) closeInvite();
+});
+$('#inviteCreate').addEventListener('click', async () => {
+  clearErrors();
+  try {
+    const r = inviteKind === 'single'
+      ? await api('/api/invite', { email: $('#inviteEmail').value.trim() })
+      : await api('/api/invite', {
+        kind: 'team',
+        domain: $('#teamDomain').value.trim(),
+        max_uses: Number($('#teamMaxUses').value) || 0,
+      });
+    if (inviteKind === 'single') $('#inviteEmail').value = '';
+    showLink(r.link, r.kind === 'team'
+      ? `reusable, expires in ${r.expires_days} days`
+      : `single use, expires in ${r.expires_days} days`);
+    // the dialog stays open holding the link; refresh the list behind it
+    load().catch((e) => showError(e.message, '#inviteErr'));
+  } catch (e) {
+    showError(e.message, '#inviteErr');
+  }
+});
+
 $('#orgCreate').addEventListener('click', () => act(async () => {
   const r = await api('/api/admin/create-org', {
     name: $('#newOrgName').value.trim(),
@@ -225,30 +351,31 @@ $('#orgCreate').addEventListener('click', () => act(async () => {
     $('#orgLinkOut').hidden = false;
     $('#orgLinkValue').select();
   }
-}));
+}, '#orgErr'));
+
 $('#dbOrg').addEventListener('change', syncDbId);
 $('#dbSave').addEventListener('click', () => {
   const slug = $('#dbOrg').value;
   const id = $('#dbId').value.trim();
   const org = (state.allOrgs || []).find((o) => o.slug === slug) || {};
-  if (id === (org.database_id || '')) { showError('that is already its database'); return; }
+  if (id === (org.database_id || '')) {
+    showError('that is already its database', '#dbErr');
+    return;
+  }
   if (!confirm(`Point '${slug}' at ${id}?\n\nIts dashboard and its collectors both `
              + `switch to that database. Usage already reported stays in `
              + `${org.database_id || 'the old database'} and will not appear on the `
              + `dashboard any more.`)) return;
-  act(() => api('/api/admin/set-org-database', { slug, database_id: id }));
+  act(() => api('/api/admin/set-org-database', { slug, database_id: id }), '#dbErr');
 });
-$('#orgLinkCopy').addEventListener('click', () => {
-  const f = $('#orgLinkValue');
+
+function copyField(sel) {
+  const f = $(sel);
   f.select();
   if (navigator.clipboard) navigator.clipboard.writeText(f.value);
   else document.execCommand('copy');
-});
-$('#linkCopy').addEventListener('click', () => {
-  const f = $('#linkValue');
-  f.select();
-  if (navigator.clipboard) navigator.clipboard.writeText(f.value);
-  else document.execCommand('copy');
-});
+}
+$('#orgLinkCopy').addEventListener('click', () => copyField('#orgLinkValue'));
+$('#linkCopy').addEventListener('click', () => copyField('#linkValue'));
 
 load().catch((e) => showError(e.message));
