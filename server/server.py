@@ -1434,6 +1434,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # Nothing here is meant to be framed, and /device least of all: framed,
+        # its Approve button is one hidden click from binding a collector to
+        # the victim's account (classic clickjacking). nosniff because a
+        # misrouted response must not be promoted to script by the browser.
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
         # no-store is the right default: API responses are private, per-viewer
         # data. Static assets override it -- see _static.
         self.send_header("Cache-Control", cache or "no-store")
@@ -1472,6 +1478,7 @@ class Handler(BaseHTTPRequestHandler):
     _rate_lock = threading.Lock()
     RATE_LIMIT, RATE_WINDOW = 5, 3600
     INVITE_RATE_LIMIT = 30
+    LOGIN_RATE_LIMIT = 30  # FAILED attempts per IP-hour; successes never count
 
     def _rate_limited(self, bucket, limit=None, record=True):
         # rightmost X-Forwarded-For entry: proxies (App Runner/ALB) append the
@@ -1481,8 +1488,11 @@ class Handler(BaseHTTPRequestHandler):
         key = f"{bucket}:{ip}"
         now = time.time()
         with Handler._rate_lock:
+            # v can be empty -- a record=False probe stores no hit -- so the
+            # v[-1] age test must not assume one (it used to, and one /setup
+            # probe would poison the purge with an IndexError for everyone)
             for k in [k for k, v in Handler._rate.items()
-                      if now - v[-1] >= self.RATE_WINDOW]:
+                      if not v or now - v[-1] >= self.RATE_WINDOW]:
                 del Handler._rate[k]
             hits = [t for t in Handler._rate.get(key, []) if now - t < self.RATE_WINDOW]
             if len(hits) >= (limit or self.RATE_LIMIT):
@@ -1492,7 +1502,10 @@ class Handler(BaseHTTPRequestHandler):
             # for callers that only want to charge for work they actually did
             if record:
                 hits.append(now)
-            Handler._rate[key] = hits
+            if hits:
+                Handler._rate[key] = hits
+            else:
+                Handler._rate.pop(key, None)  # never keep an empty bucket
         return False
 
     def _public_origin(self):
@@ -1502,6 +1515,17 @@ class Handler(BaseHTTPRequestHandler):
         host = self.headers.get("X-Forwarded-Host", self.headers.get("Host", ""))
         proto = self.headers.get("X-Forwarded-Proto", "http")
         return proto, host
+
+    def _session_cookie(self, token, max_age=None):
+        """The one place the session cookie is spelled. Secure rides along
+        whenever the request arrived over TLS (the proxy says so), so the
+        browser never repeats the cookie over plain http; dev on localhost
+        stays plain http and still gets a cookie."""
+        cookie = (f"hotusage_session={token}; HttpOnly; SameSite=Lax; Path=/; "
+                  f"Max-Age={SESSION_TTL if max_age is None else max_age}")
+        if self._public_origin()[0] == "https":
+            cookie += "; Secure"
+        return cookie
 
     def _page(self, name, subs=None):
         """Serve a static page with {{PLACEHOLDER}} substitution, HTML-escaped."""
@@ -1535,14 +1559,20 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_login(self):
         form = self._read_form()
         nxt = self._safe_next(form.get("next", "/"))
+        # Failures only: a team behind one NAT signs in all day and must never
+        # spend this budget on success, but scrypt at parallel-thread speed is
+        # all the sleep below was slowing down. Checked before the scrypt work
+        # so a limited IP costs nothing; recorded only when the attempt fails.
+        if self._rate_limited("login", limit=self.LOGIN_RATE_LIMIT, record=False):
+            self._redirect("/login?err=rate&next=" + quote(nxt))
+            return
         token = self.auth.login(form.get("email", ""), form.get("password", ""))
         if not token:
+            self._rate_limited("login", limit=self.LOGIN_RATE_LIMIT)
             time.sleep(0.3)  # soften brute force
             self._redirect("/login?err=1&next=" + quote(nxt))
             return
-        cookie = (f"hotusage_session={token}; HttpOnly; SameSite=Lax; Path=/; "
-                  f"Max-Age={SESSION_TTL}")
-        self._redirect(nxt, extra=[("Set-Cookie", cookie)])
+        self._redirect(nxt, extra=[("Set-Cookie", self._session_cookie(token))])
 
     def _handle_register(self):
         if self._rate_limited("register"):
@@ -1561,10 +1591,8 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect("/register?err=" + quote(str(e)))
             return
         token = self.auth.login(email, password)
-        cookie = (f"hotusage_session={token}; HttpOnly; SameSite=Lax; Path=/; "
-                  f"Max-Age={SESSION_TTL}")
         # the account exists now; _needs_org sends them on to make one
-        self._redirect("/setup", extra=[("Set-Cookie", cookie)])
+        self._redirect("/setup", extra=[("Set-Cookie", self._session_cookie(token))])
 
     def _handle_setup(self):
         """Create the org for a signed-in account that has none."""
@@ -1629,9 +1657,7 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect("/")
             return
         session = self.auth.login(email, password)
-        cookie = (f"hotusage_session={session}; HttpOnly; SameSite=Lax; Path=/; "
-                  f"Max-Age={SESSION_TTL}")
-        self._redirect("/", extra=[("Set-Cookie", cookie)])
+        self._redirect("/", extra=[("Set-Cookie", self._session_cookie(session))])
 
     def do_POST(self):
         path = urlparse(self.path).path
@@ -1894,7 +1920,10 @@ class Handler(BaseHTTPRequestHandler):
             # address stands. Prefer the former.
             presented = self.headers.get("Authorization", "")[len("Bearer "):] \
                 if self.headers.get("Authorization", "").startswith("Bearer ") else ""
-            shared = bool(self.token) and presented == self.token
+            # constant-time: the shared token admits ingest for the whole
+            # company, and == leaks its prefix length to a timing probe
+            shared = bool(self.token) and hmac.compare_digest(
+                presented.encode(), self.token.encode())
             owner = None if shared or not presented \
                 else self.auth.collector_token_user(presented)
             if not owner and self.token and not shared:
@@ -2102,7 +2131,7 @@ class Handler(BaseHTTPRequestHandler):
                 if token:
                     self.auth.logout(token)
                 self._redirect("/login", extra=[
-                    ("Set-Cookie", "hotusage_session=; Path=/; Max-Age=0")])
+                    ("Set-Cookie", self._session_cookie("", max_age=0))])
                 return
 
             viewer = self._viewer()
