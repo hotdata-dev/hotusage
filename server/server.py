@@ -840,6 +840,11 @@ class AuthStore:
         database_id = (database_id or "").strip()
         if not self.DB_ID_RE.match(database_id):
             raise ValueError("that does not look like a hotdata database id")
+        # the accounts database is well-formed and claimed by no org, so the
+        # clash check below would wave it through -- and usage tables would be
+        # created alongside users, orgs and collector_tokens
+        if database_id == self.sysdb.db:
+            raise ValueError("that is the system database, not a usage database")
         rows = self.sysdb.rows(f"SELECT slug, name, database_id, created_at "
                                f"FROM {SYS}.public.orgs")
         row = next((r for r in rows if r["slug"] == slug), None)
@@ -853,10 +858,16 @@ class AuthStore:
             raise ValueError(f"'{clash['slug']}' already reports into that database; "
                              f"two organizations sharing one is what org isolation "
                              f"prevents")
+        target = self.pool.get(database_id)
         try:
-            self.pool.get(database_id).ensure_schema_and_tables(USAGE_TABLES)
+            # probe first: ensure_schema_and_tables swallows 400 and 409 so that
+            # "already exists" is not an error, which means it would also
+            # swallow "no such database" and vouch for an id that does not
+            # exist. sql(), not rows() -- rows() turns "not found" into [].
+            target.sql("SELECT 1")
+            target.ensure_schema_and_tables(USAGE_TABLES)
         except Exception as e:
-            raise ValueError(f"could not prepare that database: {e}")
+            raise ValueError(f"could not reach that database: {e}")
         self.sysdb.load("orgs", [{"slug": row["slug"], "name": row["name"],
                                   "database_id": database_id,
                                   "created_at": str(row["created_at"])}], "upsert")
