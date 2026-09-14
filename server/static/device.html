@@ -22,32 +22,32 @@
         <!-- the hostname is whatever that machine said it was called, so it is
              shown as a quoted value rather than woven into the sentence: a
              machine named "your account" must not be able to read as prose -->
-        <p class="devtext">A machine is asking to sign in as <b>{{EMAIL}}</b>
-          and:</p>
-        <p class="devtext">machine name (self-reported):
-          <span class="devhost">{{HOST}}</span></p>
+        <p class="devtext">Sign in as <b>{{EMAIL}}</b> and:</p>
         <ul class="devtext" id="grants">
-          <li id="grant-ingest" hidden>report this machine's coding-agent usage
-            as you</li>
-          <li id="grant-read" hidden><b>read your organization's usage</b> —
-            everyone's sessions, projects and costs — so your coding agent can
-            answer questions about it</li>
+          <li id="grant-ingest" hidden>report this machine's usage as you</li>
+          <!-- the one grant worth spelling out: it hands this machine everyone
+               else's sessions, which is a different decision from letting it
+               report its own -->
+          <li id="grant-read" hidden><b>read your organization's usage</b></li>
         </ul>
-        <p class="devtext"><b>Only approve this if you just started a sign-in
-          on that machine.</b> Type the code it is showing you:</p>
+        <p class="devtext">machine (self-reported):
+          <span class="devhost">{{HOST}}</span></p>
+        <p class="devtext"><b>Only approve a sign-in you just started.</b></p>
         <!-- typed, not prefilled: the code is the only evidence the person
              clicking Approve is actually sitting at the machine that asked -->
         <form method="post" action="/device/approve?code={{CODE}}">
           <div class="field">
             <label for="user_code">Code shown on that machine</label>
+            <!-- no placeholder: it repeated the label word for word, and the
+                 uppercasing this field does to the typed code turned the echo
+                 into a wall of capitals that was clipped by the input anyway -->
             <input id="user_code" name="user_code" type="text" required autofocus
                    class="devinput" autocomplete="off" autocapitalize="off"
-                   autocorrect="off" spellcheck="false" maxlength="20"
-                   placeholder="code shown on that machine">
+                   autocorrect="off" spellcheck="false" maxlength="20">
           </div>
           <button class="signin" type="submit" id="approve">Approve</button>
         </form>
-        <div class="alt">Not you? Close this page and the request expires on its own.</div>
+        <div class="alt">Not you? Close this page.</div>
       </div>
 
       <div id="done" hidden>

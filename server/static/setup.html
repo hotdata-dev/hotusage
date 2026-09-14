@@ -20,8 +20,7 @@
 
       <!-- the address stays: it is how someone signed in to the wrong account
            notices before they create an organization under it -->
-      <p class="devtext">Signed in as <b>{{EMAIL}}</b>. Your team's usage is
-        collected under this organization.</p>
+      <p class="devtext">Signed in as <b>{{EMAIL}}</b>.</p>
 
       <form method="post" action="/setup">
         <input type="hidden" name="next" value="{{NEXT}}">
@@ -33,8 +32,7 @@
         <button class="signin" type="submit">Create organization</button>
       </form>
 
-      <div class="alt">Joining a team instead? Open the invite link an admin
-        sends you.</div>
+      <div class="alt">Have an invite link? Open it instead.</div>
       <div class="alt"><a href="/logout">Sign out</a></div>
     </div>
   </div>
