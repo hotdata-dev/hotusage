@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hotusage - install the client</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.svg">
+  <link rel="stylesheet" href="/static/auth.css">
+</head>
+<body>
+  <div class="login-wrap install-wrap">
+    <div class="login-card">
+      <div class="brandrow">
+        <img class="mark" src="/static/icon.svg" width="22" height="22" alt="">
+        <h1>hotusage</h1>
+      </div>
+      <div class="sub" id="sub">Install the client to start collecting</div>
+
+      <div id="waiting" hidden>
+        <p class="devtext"><b>{{ORG}}</b> has nothing reporting yet. The
+          dashboard fills from the hotusage client, which reads the usage your
+          coding agents already record and sends the numbers here.</p>
+
+        <p class="devtext">Run this on your machine — macOS or Linux:</p>
+        <div class="cmdrow">
+          <code class="cmd" id="cmd">curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh | sh</code>
+          <button type="button" class="copy" id="copy">Copy</button>
+        </div>
+
+        <p class="devtext">It installs in one step, then opens your browser to
+          approve the machine. Approve it as <b>{{EMAIL}}</b> and this page moves
+          on by itself.</p>
+
+        <p class="devtext waitline" id="waitline">Waiting for your first machine…</p>
+
+        <div class="alt">On Windows? Take the <code>.zip</code> from the
+          <a href="https://github.com/hotdata-dev/hotusage-client/releases">latest
+          release</a>, put <code>hotusage.exe</code> on your PATH, and run
+          <code>hotusage install</code>.</div>
+        <!-- a prompt, not a wall: someone who is signing in to manage the org
+             rather than to report usage has no machine to install on, and
+             trapping them here would make the organization page unreachable
+             for the one person who administers it -->
+        <div class="alt"><a href="/install/skip?next={{NEXT}}" id="skip">Skip for
+          now</a> — you can install any time.</div>
+      </div>
+
+      <div id="done" hidden>
+        <p class="devtext"><b>Connected.</b> A machine is reporting usage for
+          <b>{{EMAIL}}</b>. The first sync runs immediately; a session shows up
+          once your coding agent has written one.</p>
+        <a class="signin cta" href="{{NEXT}}" id="go">Go to the dashboard</a>
+      </div>
+    </div>
+  </div>
+  <script>
+    var state = "{{STATE}}";
+    var panel = document.getElementById(state);
+    if (panel) panel.hidden = false;
+    if (state === 'done') document.getElementById('sub').textContent = 'Client connected';
+
+    var copy = document.getElementById('copy');
+    if (copy) copy.addEventListener('click', function () {
+      var text = document.getElementById('cmd').textContent;
+      // clipboard needs a secure context, which plain-http dev is not; fall
+      // back to selecting the command so it can still be copied by hand
+      function selectIt() {
+        var r = document.createRange();
+        r.selectNodeContents(document.getElementById('cmd'));
+        var s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+      }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(function () {
+          copy.textContent = 'Copied';
+          setTimeout(function () { copy.textContent = 'Copy'; }, 1600);
+        }, selectIt);
+      } else {
+        selectIt();
+      }
+    });
+
+    // Poll until a machine appears, then move on. The destination is read from
+    // the DOM rather than interpolated into this script: the template escapes
+    // for HTML, which is not the same as escaping for a JavaScript string.
+    if (state === 'waiting') {
+      var go = document.getElementById('go');
+      var tries = 0;
+      var timer = setInterval(function () {
+        // the approval happens in another tab or on another machine, so this is
+        // the only thing that can notice it
+        fetch('/api/install-status', { headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) {
+            if (d && d.ready) {
+              clearInterval(timer);
+              window.location.href = go.getAttribute('href');
+            }
+          })
+          .catch(function () { /* offline or a blip: the next tick retries */ });
+        // stop after roughly ten minutes rather than polling a tab left open
+        // overnight; the line says so instead of going quiet
+        if (++tries > 200) {
+          clearInterval(timer);
+          document.getElementById('waitline').textContent =
+            'Still nothing reporting. Reload this page once the client is installed.';
+        }
+      }, 3000);
+    }
+  </script>
+</body>
+</html>
