@@ -40,11 +40,16 @@ Besides the dashboard the server exposes a small read-only API, which is what
 the client's `summary`/`chart`/`users` commands call: `GET /api/data`,
 `/api/session/<id>`, `/api/orgs`, `/api/status`.
 
-That list is an allow-list (`Handler.READ_TOKEN_PATHS`), not a prefix rule —
-every other route either mutates something or hands back a credential, and a
-token minted for reporting must reach neither. Bearer credentials are never sent
-by a browser on its own, so these routes need no CSRF defence beyond staying
-read-only.
+Two allow-lists back that, both on `Handler`: `READ_TOKEN_PATHS` matches
+`/api/data`, `/api/orgs` and `/api/status` exactly, and `READ_TOKEN_PREFIXES`
+holds the single prefix `/api/session/`, which has to match by prefix because
+the session id is in the path.
+
+What matters is that it is an allow-list at all rather than "anything under
+`/api/`": every other route either mutates something or hands back a credential
+(invite links, machine tokens), and a token minted for reporting must reach
+neither. Bearer credentials are never sent by a browser on its own, so these
+routes need no CSRF defence beyond staying read-only.
 
 ## Tokens and scopes
 
@@ -124,6 +129,11 @@ payload already carries. To reprice a provider, edit `rates_claude` /
 The copy in this repo's `core.py` is a leftover from the original Python
 collector, is not what the dashboard shows, and has already drifted (it has no
 fast-mode branch). It is labelled as unused at the top of its pricing block.
+
+For **actual** spend rather than list-price equivalents: the spend report at
+`claude.ai/admin-settings/usage` exports per-user, per-model cost as a daily
+CSV, and Claude Code's OpenTelemetry export emits `claude_code.cost.usage` in
+real dollars per user. Neither is something this server can derive.
 
 ## Backups
 

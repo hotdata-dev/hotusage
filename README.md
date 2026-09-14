@@ -17,7 +17,8 @@ curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/in
 ```
 
 Your browser opens, you approve the machine, and it starts reporting. From then
-on it syncs by itself.
+on it syncs by itself. Headless machines run `hotusage signin` instead, which
+prints a URL and a code to approve from any browser.
 
 Two ways to see the numbers: open the **dashboard**, or ask your coding agent —
 the installer teaches Claude Code and Codex to answer questions like *"what did
@@ -33,8 +34,9 @@ numbers.
 worked out from token counts at published rates. If your team is on a Max, Team
 or Enterprise plan you pay a flat per-seat fee and none of this — an
 organization can easily show tens of thousands here while paying a few hundred.
-Use them to compare people, projects and trends; for actual spend see the report
-in your Claude admin console.
+Use them to compare people, projects and trends; for actual spend see the spend
+report at `claude.ai/admin-settings/usage`, which exports per-user cost as a
+daily CSV.
 
 ## Running an organization
 
@@ -47,8 +49,9 @@ emailed:
 - a *team link* anyone can use to join with their own email and password
 
 You can restrict a team link to an email domain and cap how many times it is
-used. **Restrict it to your domain unless you are sharing it privately** —
-anyone holding an open link can join and read your organization's usage.
+used; it expires after 30 days by default, 90 at most. **Restrict it to your
+domain unless you are sharing it privately** — anyone holding an open link can
+join and read your organization's usage.
 
 **Managing members.** Promote or demote admins, and remove people. Removing
 someone revokes their logins and their machines; usage they already reported
