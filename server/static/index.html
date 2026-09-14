@@ -37,7 +37,7 @@
         <span class="flabel">Metric</span>
         <div class="seg" id="metricSeg" role="group" aria-label="Metric">
           <button data-metric="tok" type="button" aria-pressed="true">Tokens</button>
-          <button data-metric="cost" type="button">Est. cost</button>
+          <button data-metric="cost" type="button" title="API list-price equivalent, not a bill">List-price equiv.</button>
         </div>
       </div>
       <span class="spacer"></span>
@@ -70,9 +70,11 @@
     </div>
 
     <footer class="foot">
-      Costs are estimates at provider API list prices (Anthropic: cache read 0.1x input,
-      cache writes 1.25x / 2x input; OpenAI: cached input ~10% of input) &mdash;
-      subscription plans do not bill per token.
+      Dollar figures are <b>API list-price equivalents, not a bill</b> (Anthropic: cache
+      read 0.1x input, cache writes 1.25x / 2x input, fast mode at its premium rate;
+      OpenAI: cached input ~10% of input). Subscription plans &mdash; Max, Team,
+      Enterprise &mdash; charge a flat per-seat fee and bill none of this; see the spend
+      report in your Claude admin console for actual cost.
       Served from the hotdata <code>hotusage</code> database, fed by per-user hotusage
       collectors (Claude Code, Codex, and OpenCode history; Cursor and Gemini CLI keep
       no local token counts).

@@ -61,7 +61,7 @@ function svg(tag, attrs, ...children) {
 function metaTail(s) {
   return `${timeShort(s.start)} to ${timeShort(s.end)} · ` +
     `${fmtInt(s.requests)} requests · peak context ${fmtInt(s.peakCtx)} tokens · ` +
-    `est. ${fmtMoney(s.cost)}`;
+    `${fmtMoney(s.cost)} list`;
 }
 
 function fmtTok(n) {
@@ -492,7 +492,7 @@ const COLS = [
   { key: 'out',      label: 'Output',       num: true, sortKey: 'out' },
   { key: 'total',    label: 'Total tokens', num: true, sortKey: 'total' },
   { key: 'peakCtx',  label: 'Peak context', num: true, sortKey: 'peakCtx' },
-  { key: 'cost',     label: 'Est. cost',    num: true, sortKey: 'cost' },
+  { key: 'cost',     label: 'List $',       num: true, sortKey: 'cost' },
 ];
 
 function sortVal(s, key) {
@@ -686,7 +686,8 @@ function renderTiles(sessions) {
     { label: 'Total tokens', value: fmtTok(sum((s) => s.in + s.out + s.cr + s.cw)), hint: 'incl. cache reads' },
     { label: 'Output tokens', value: fmtTok(sum((s) => s.out)) },
     { label: 'Max context', value: fmtTok(sessions.length ? Math.max(...sessions.map((s) => s.peakCtx)) : 0), hint: 'largest single request' },
-    { label: 'Est. API cost', value: fmtMoney(sum((s) => s.cost)), hint: 'list-price estimate' },
+    { label: 'List-price equiv.', value: fmtMoney(sum((s) => s.cost)),
+      hint: 'API list prices, not a bill' },
   ];
   for (const t of tiles) {
     box.append(el('div', { class: 'tile' },
@@ -721,7 +722,8 @@ function render() {
   if (!state.data) return;
   const sessions = filteredSessions();
   const days = dailyAgg(sessions);
-  $('#dailyTitle').textContent = state.metric === 'tok' ? 'Daily usage (tokens)' : 'Daily usage (est. cost)';
+  $('#dailyTitle').textContent = state.metric === 'tok'
+    ? 'Daily usage (tokens)' : 'Daily usage (list-price equivalent)';
   renderTiles(sessions);
   renderLegend();
   renderDailyToggle();
