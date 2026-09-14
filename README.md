@@ -1,3 +1,5 @@
+<img src="docs/logo.png" alt="" width="72" height="72">
+
 # hotusage
 
 Company-wide usage analytics for AI coding agents — Claude Code, Codex and
