@@ -15,6 +15,20 @@
   --s-cw:           #1baf7a;   /* cache write - slot 3 aqua   */
   --s-cr:           #eda100;   /* cache read  - slot 4 yellow */
   --s-ctx:          #4a3aa7;   /* context line - slot 7 violet */
+  /* categorical slots, for stacking by an entity (a person) rather than by
+     token type. Same validated eight-hue theme the --s-* roles are drawn from,
+     under their own names: blue means "output" wherever a chart stacks token
+     types, and reusing that token for a person would make one hue mean two
+     things in the same legend. Assigned in fixed order by identity, never by
+     rank, so filtering the chart never repaints the series that remain. */
+  --cat-1:          #2a78d6;
+  --cat-2:          #eb6834;
+  --cat-3:          #1baf7a;
+  --cat-4:          #eda100;
+  --cat-5:          #e87ba4;
+  --cat-6:          #008300;
+  --cat-7:          #4a3aa7;
+  --cat-8:          #e34948;
   /* danger: errors and destructive actions. Its own hue, deliberately not
      --s-in -- that orange means input tokens everywhere else. */
   --danger:         #e34948;
@@ -43,6 +57,14 @@
     --s-cw:         #199e70;
     --s-cr:         #c98500;
     --s-ctx:        #9085e9;
+    --cat-1:        #3987e5;
+    --cat-2:        #d95926;
+    --cat-3:        #199e70;
+    --cat-4:        #c98500;
+    --cat-5:        #d55181;
+    --cat-6:        #008300;
+    --cat-7:        #9085e9;
+    --cat-8:        #e66767;
     --danger:       #f2706f;
     --danger-bg:    rgba(242, 112, 111, 0.14);
     --danger-edge:  rgba(242, 112, 111, 0.42);

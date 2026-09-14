@@ -21,6 +21,7 @@ const state = {
   range: '30',        // the first load only fetches this window
   loadedDays: 30,     // what the server has actually sent us so far
   metric: 'tok',
+  stackBy: 'type',    // 'type' = token types, 'user' = one band per person
   sort: { key: 'end', dir: -1 },
   page: 0,            // sessions table page (PAGE_SIZE rows each)
   expanded: null,
@@ -112,6 +113,48 @@ function durationLabel(startTs, endTs) {
 const shortModel = (m) => m.replace(/^claude-/, '');
 const seriesColor = (s) => `var(${s.cssVar})`;
 
+// --- stacking by person ----------------------------------------------------
+// Slots are assigned from the whole loaded dataset in sorted order, NOT from
+// whatever survives the current filters: colour has to follow the person, or
+// filtering to a subset would repaint everyone who remained. Beyond the eight
+// validated hues the tail folds into one "Other" band rather than inventing a
+// ninth colour nobody can tell from the others.
+const CAT_SLOTS = 8;
+
+let userSlotCache = null;
+function userSlots() {
+  if (userSlotCache) return userSlotCache;
+  const all = [...new Set((state.data?.sessions || []).map((s) => s.user).filter(Boolean))].sort();
+  const short = new Map();
+  for (const email of all) {
+    const local = email.split('@')[0];
+    // keep the local part unless two people share it, then disambiguate
+    const clash = all.some((o) => o !== email && o.split('@')[0] === local);
+    short.set(email, clash ? email : local);
+  }
+  userSlotCache = { all, short };
+  return userSlotCache;
+}
+
+function userSeries() {
+  const { all, short } = userSlots();
+  const named = all.slice(0, CAT_SLOTS).map((email, i) => ({
+    key: email, label: short.get(email), color: `var(--cat-${i + 1})`,
+  }));
+  const rest = all.slice(CAT_SLOTS);
+  if (rest.length) {
+    named.push({ key: '__other', label: `Other (${rest.length})`,
+                 color: 'var(--muted)', members: new Set(rest) });
+  }
+  return named;
+}
+
+/// What the daily chart, its table and its legend are stacking right now.
+function activeSeries() {
+  if (state.stackBy === 'user') return userSeries();
+  return SERIES.map((sr) => ({ key: sr.key, label: sr.label, color: seriesColor(sr) }));
+}
+
 function niceTicks(max, count) {
   if (max <= 0) return { ticks: [0, 1], top: 1 };
   const raw = max / count;
@@ -171,26 +214,37 @@ function filteredSessions() {
   });
 }
 
+const zeroDay = () => ({ in: 0, out: 0, cr: 0, cw: 0, cin: 0, cout: 0, ccr: 0, ccw: 0, u: new Map() });
+
 function dailyAgg(sessions) {
   const ids = new Set(sessions.map((s) => s.id));
+  // daily rows carry a session id but no person, so the owner is joined here
+  const owner = new Map(sessions.map((s) => [s.id, s.user]));
   const cut = cutoffDay();
   const byDay = new Map();
   for (const r of state.data.daily) {
     if (!ids.has(r.s)) continue;
     if (cut && r.d < cut) continue;
     let d = byDay.get(r.d);
-    if (!d) { d = { in: 0, out: 0, cr: 0, cw: 0, cin: 0, cout: 0, ccr: 0, ccw: 0 }; byDay.set(r.d, d); }
-    for (const k of Object.keys(d)) d[k] += r[k] || 0;
+    if (!d) { d = zeroDay(); byDay.set(r.d, d); }
+    for (const k of Object.keys(d)) { if (k !== 'u') d[k] += r[k] || 0; }
+    // both metrics per person, so the metric toggle needs no re-aggregation
+    const who = owner.get(r.s) || '(unknown)';
+    const cur = d.u.get(who) || { tok: 0, cost: 0 };
+    cur.tok += (r.in || 0) + (r.out || 0) + (r.cr || 0) + (r.cw || 0);
+    cur.cost += (r.cin || 0) + (r.cout || 0) + (r.ccr || 0) + (r.ccw || 0);
+    d.u.set(who, cur);
   }
   if (!byDay.size) return [];
   const daysSorted = [...byDay.keys()].sort();
   const first = cut || daysSorted[0];
   const last = daysSorted[daysSorted.length - 1];
   const out = [];
-  const zero = { in: 0, out: 0, cr: 0, cw: 0, cin: 0, cout: 0, ccr: 0, ccw: 0 };
   const d = new Date(first + 'T12:00:00');
   for (let day = first; day <= last; d.setDate(d.getDate() + 1), day = localDay(d)) {
-    out.push({ d: day, ...(byDay.get(day) || zero) });
+    // a fresh zero row per gap day: they carry a Map, which a shared object
+    // would alias across every empty day
+    out.push({ d: day, ...(byDay.get(day) || zeroDay()) });
     if (out.length > 5000) break; // safety
   }
   return out;
@@ -198,7 +252,21 @@ function dailyAgg(sessions) {
 
 const sessionTotal = (s) => (state.metric === 'tok' ? s.in + s.out + s.cr + s.cw : s.cost);
 const sessionVals = (s) => SERIES.map((sr) => (state.metric === 'tok' ? s[sr.key] : s[sr.ckey]));
-const dayVals = (row) => SERIES.map((sr) => (state.metric === 'tok' ? row[sr.key] : row[sr.ckey]));
+function dayVals(row) {
+  if (state.stackBy !== 'user') {
+    return SERIES.map((sr) => (state.metric === 'tok' ? row[sr.key] : row[sr.ckey]));
+  }
+  const pick = (v) => (state.metric === 'tok' ? v.tok : v.cost);
+  return activeSeries().map((s) => {
+    if (s.members) {
+      let sum = 0;
+      for (const [who, v] of row.u || []) if (s.members.has(who)) sum += pick(v);
+      return sum;
+    }
+    const v = (row.u || new Map()).get(s.key);
+    return v ? pick(v) : 0;
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Stacked daily column chart
@@ -262,6 +330,7 @@ function renderDailyChart(container, days) {
     }));
   });
 
+  const active = activeSeries();
   days.forEach((row, i) => {
     const vals = dayVals(row);
     const g = svg('g', { class: 'day' });
@@ -277,7 +346,7 @@ function renderDailyChart(container, days) {
       if (!firstDrawn && yBot - yTop > 3) yBot -= 2;
       firstDrawn = false;
       const hh = Math.max(1, yBot - yTop);
-      const fill = `fill: ${seriesColor(SERIES[k])}`;
+      const fill = `fill: ${active[k].color}`;
       if (k === topSegIdx && hh > 3) {
         g.append(svg('path', { class: 'segment', d: roundTopRect(x, yTop, barW, hh, 4), style: fill }));
       } else {
@@ -292,7 +361,13 @@ function renderDailyChart(container, days) {
     });
     const build = (t) => {
       t.append(el('div', { class: 'tt-head', text: headTxt }));
-      SERIES.forEach((sr, k) => t.append(tipRow(seriesColor(sr), false, fmtMetricExact(vals[k]), sr.label)));
+      // zero bands are dropped from the tooltip: with a person per band most
+      // days touch only a few, and listing six zeroes buries the ones that matter
+      active.forEach((sr, k) => {
+        if (state.stackBy !== 'user' || vals[k] > 0) {
+          t.append(tipRow(sr.color, false, fmtMetricExact(vals[k]), sr.label));
+        }
+      });
       t.append(tipRow(null, false, fmtMetricExact(totals[i]), 'Total', 'total'));
     };
     hit.addEventListener('pointermove', (e) => { g.classList.add('lift'); showTip(build, e.clientX, e.clientY); });
@@ -312,8 +387,9 @@ function renderDailyChart(container, days) {
 function renderDailyTable(container, days) {
   container.replaceChildren();
   const table = el('table', { class: 'data' });
+  const active = activeSeries();
   const trh = el('tr', null, el('th', { text: 'Date' }));
-  for (const sr of SERIES) trh.append(el('th', { class: 'num', text: sr.label }));
+  for (const sr of active) trh.append(el('th', { class: 'num', text: sr.label }));
   trh.append(el('th', { class: 'num', text: 'Total' }));
   table.append(el('thead', null, trh));
   const tb = el('tbody');
@@ -700,9 +776,10 @@ function renderTiles(sessions) {
 function renderLegend() {
   const box = $('#dailyLegend');
   box.replaceChildren();
-  for (const sr of SERIES) {
+  // always present: identity must never be carried by colour alone
+  for (const sr of activeSeries()) {
     const sw = el('span', { class: 'swatch' });
-    sw.style.background = seriesColor(sr);
+    sw.style.background = sr.color;
     box.append(el('span', { class: 'item' }, sw, el('span', { text: sr.label })));
   }
 }
@@ -722,8 +799,9 @@ function render() {
   if (!state.data) return;
   const sessions = filteredSessions();
   const days = dailyAgg(sessions);
-  $('#dailyTitle').textContent = state.metric === 'tok'
-    ? 'Daily usage (tokens)' : 'Daily usage (list-price equivalent)';
+  const unit = state.metric === 'tok' ? 'tokens' : 'list-price equivalent';
+  $('#dailyTitle').textContent = state.stackBy === 'user'
+    ? `Daily usage by person (${unit})` : `Daily usage (${unit})`;
   renderTiles(sessions);
   renderLegend();
   renderDailyToggle();
@@ -839,6 +917,9 @@ async function load(fresh, days) {
     if (!r.ok) throw new Error(body.error || r.statusText);
     if (seq !== loadSeq) return;  // a later request already answered
     state.data = body;
+    // slot assignment is derived from the whole dataset, so a wider window or a
+    // different org must re-derive it rather than keep the old ordering
+    userSlotCache = null;
     state.loadedDays = body.windowDays || Infinity;
     if (body.viewer && window.setViewer) {
       window.setViewer(body.viewer.email, body.viewer.org);
@@ -893,6 +974,7 @@ wireSeg('rangeSeg', 'range', (v) => {
   if (want > state.loadedDays) load(false, v);  // fetch the wider window
 });
 wireSeg('metricSeg', 'metric', (v) => { state.metric = v; });
+wireSeg('stackSeg', 'stack', (v) => { state.stackBy = v; });
 wireSeg('providerSeg', 'provider', (v) => { state.provider = v; populateProjects(); });
 $('#refresh').addEventListener('click', () => load(true));
 let resizeTimer = null;
