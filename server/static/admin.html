@@ -75,29 +75,6 @@
         <button class="refresh" id="orgLinkCopy" type="button">Copy</button>
       </div>
 
-      <!-- Break-glass, used a few times a year: collapsed by default, with the
-           warning inside it rather than standing permanently on the page. -->
-      <details class="adv" id="dbOverride">
-        <summary>Override an organization&rsquo;s database</summary>
-        <div class="adv-body">
-          <div class="notice danger">
-            <b>An organization's database is its isolation.</b> Repointing one changes
-            where its dashboard reads and where its collectors' usage lands. Rows
-            already reported stay in the old database and disappear from the
-            dashboard &mdash; nothing is moved or copied. A database with no usage
-            tables gets them on save. An id already claimed by another organization
-            is refused: one database per organization is the only thing keeping their
-            data apart.
-          </div>
-          <div class="advrow">
-            <select id="dbOrg" aria-label="Organization"></select>
-            <input id="dbId" type="text" spellcheck="false" autocapitalize="off"
-                   placeholder="dbid..." aria-label="Database id">
-            <button class="refresh danger-out" id="dbSave" type="button">Override</button>
-          </div>
-          <div class="modal-err" id="dbErr" hidden></div>
-        </div>
-      </details>
     </div>
 
     <div class="card adminonly">
