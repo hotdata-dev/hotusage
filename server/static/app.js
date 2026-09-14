@@ -121,13 +121,20 @@ const seriesColor = (s) => `var(${s.cssVar})`;
 // ninth colour nobody can tell from the others.
 const CAT_SLOTS = 8;
 
+// The one place a session is turned into a person. dailyAgg and userSlots both
+// call it, so a session with no address cannot land in a bucket that no series
+// ever reads -- which silently dropped its usage from the bands while leaving
+// it in the day's Total, making the two stacking modes disagree.
+const UNKNOWN_USER = '(unknown)';
+const ownerOf = (user) => user || UNKNOWN_USER;
+
 let userSlotCache = null;
 function userSlots() {
   if (userSlotCache) return userSlotCache;
-  const all = [...new Set((state.data?.sessions || []).map((s) => s.user).filter(Boolean))].sort();
+  const all = [...new Set((state.data?.sessions || []).map((s) => ownerOf(s.user)))].sort();
   const short = new Map();
   for (const email of all) {
-    const local = email.split('@')[0];
+    const local = email.includes('@') ? email.split('@')[0] : email;
     // keep the local part unless two people share it, then disambiguate
     const clash = all.some((o) => o !== email && o.split('@')[0] === local);
     short.set(email, clash ? email : local);
@@ -229,7 +236,7 @@ function dailyAgg(sessions) {
     if (!d) { d = zeroDay(); byDay.set(r.d, d); }
     for (const k of Object.keys(d)) { if (k !== 'u') d[k] += r[k] || 0; }
     // both metrics per person, so the metric toggle needs no re-aggregation
-    const who = owner.get(r.s) || '(unknown)';
+    const who = ownerOf(owner.get(r.s));
     const cur = d.u.get(who) || { tok: 0, cost: 0 };
     cur.tok += (r.in || 0) + (r.out || 0) + (r.cr || 0) + (r.cw || 0);
     cur.cost += (r.cin || 0) + (r.cout || 0) + (r.ccr || 0) + (r.ccw || 0);
@@ -285,8 +292,17 @@ function bucketWeekly(days) {
     dt.setDate(dt.getDate() - ((dt.getDay() + 6) % 7)); // back to Monday
     const wk = localDay(dt);
     let b = buckets.get(wk);
-    if (!b) { b = { d: wk, week: true, in: 0, out: 0, cr: 0, cw: 0, cin: 0, cout: 0, ccr: 0, ccw: 0 }; buckets.set(wk, b); }
+    if (!b) { b = { d: wk, week: true, ...zeroDay() }; buckets.set(wk, b); }
     for (const k of ['in', 'out', 'cr', 'cw', 'cin', 'cout', 'ccr', 'ccw']) b[k] += row[k];
+    // the per-person map has to be merged too, or a bucketed row carries no
+    // `u` and the user-stacked chart renders every column as zero -- which is
+    // what All time and a narrow 90d window do
+    for (const [who, v] of row.u || []) {
+      const cur = b.u.get(who) || { tok: 0, cost: 0 };
+      cur.tok += v.tok;
+      cur.cost += v.cost;
+      b.u.set(who, cur);
+    }
   }
   return [...buckets.values()].sort((a, b) => (a.d < b.d ? -1 : 1));
 }
