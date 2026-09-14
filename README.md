@@ -143,10 +143,17 @@ next.
 
 ## Good to know
 
-- **Costs are estimates** at provider API list prices (Anthropic cache reads
-  at 0.1× input; OpenAI cached input discounted per model). Subscription plans
-  don't bill per token; unknown models price at $0. The rate table lives in
-  `core.py` — update it when providers reprice.
+- **Dollar figures are API list-price equivalents, not a bill.** They are
+  derived from token counts at provider list prices (Anthropic cache reads at
+  0.1× input, 5-minute cache writes at 1.25× and 1-hour at 2×, fast mode at its
+  premium rate; OpenAI cached input discounted per model; unknown models $0).
+  **Subscription plans — Max, Team, Enterprise — charge a flat per-seat fee and
+  bill none of this**, so an org can show tens of thousands here while paying a
+  few hundred. Use these figures to compare people, projects and trends; for
+  actual spend use the report at `claude.ai/admin-settings/usage`, or Claude
+  Code's OpenTelemetry export (`claude_code.cost.usage`) for real per-user cost.
+  The rate table lives in the client's `core.rs` — update it when providers
+  reprice.
 - **Usage from unregistered emails is rejected** (403) — the collector shows
   the error in its menu; once the person is invited, the next sync succeeds.
 - **Per-user tokens identify their owner**: ingest signed in as someone reports
