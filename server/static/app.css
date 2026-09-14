@@ -159,7 +159,30 @@ select.project {
 .chartbox { position: relative; }
 .chartbox.loading { opacity: 0.6; }
 .chartbox svg { display: block; width: 100%; height: auto; }
-.chartbox .scroller { overflow-x: auto; }
+
+/* ---- scrollers ----
+   Anything too wide for its card carries the overflow itself. Without this the
+   widest table on the page sets the width of the document and the whole body
+   scrolls sideways, which on a phone means the header and every other card
+   drift off-screen while you are only trying to read one column.
+
+   The four gradients are the affordance: the two `local` layers travel with the
+   content and paint the card's own surface over each end, the two `scroll`
+   layers are pinned to the box and show a shadow wherever surface has been
+   scrolled away. A scroller that fits shows nothing; one that does not shows a
+   shadow on whichever side still has content. macOS overlay scrollbars are
+   invisible until you touch them, so there is otherwise no way to tell. */
+.scroller {
+  overflow-x: auto;
+  background:
+    linear-gradient(to right, var(--surface) 40%, rgba(0, 0, 0, 0)) left center / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--surface) 40%, rgba(0, 0, 0, 0)) right center / 28px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, .17), rgba(0, 0, 0, 0)) left center / 11px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, .17), rgba(0, 0, 0, 0)) right center / 11px 100% no-repeat scroll;
+}
+/* the daily table scrolls DOWN inside a capped box; the horizontal cover layers
+   above would scroll up out of the box with it and strand the shadows */
+.scroller.vscroll { max-height: 320px; overflow-y: auto; background: none; }
 
 svg text { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--muted); }
 svg .tick { font-variant-numeric: tabular-nums; }
@@ -307,3 +330,91 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .menu-org { width: 100%; text-align: left; background: none; border: 0;
             font: inherit; cursor: pointer; }
 .menu-org.active { color: var(--muted); cursor: default; }
+
+/* ---------------------------------------------------------------------------
+   Narrow viewports
+   ---------------------------------------------------------------------------
+   Two width breakpoints and one pointer query, and all three only ADD to the
+   default: the desktop layout above is what a 1100px column is tuned for and
+   nothing below reaches it.
+
+   760px is the threshold because that is the width at which the header's four
+   flex children -- brand, two page links, account -- stop fitting on one line
+   at their real type size. Everything else that has to give way gives way at
+   the same width, so there is one place to reason about rather than six
+   different points at which the page changes shape. 430px is the second band:
+   phones held in portrait, where a label and its control no longer share a
+   line and the stat tiles have to go single file.
+   --------------------------------------------------------------------------- */
+@media (max-width: 760px) {
+  .wrap { padding: 16px 14px 40px; }
+  .topin { padding: 9px 14px; }
+
+  /* The nav drops to its own full-width line rather than being truncated: both
+     links are how you move between the only two pages there are, and a header
+     that hides half its navigation on a phone is the wrong half to hide. The
+     order values put brand and account back on line one with the spacer
+     between them; `width: 100%` is what forces the break. */
+  .topin { flex-wrap: wrap; row-gap: 8px; }
+  .navlinks { order: 3; width: 100%; }
+  .topin .spacer, .accountwrap { order: 2; }
+
+  /* the account button carries an organization name, which is free text and can
+     be long enough on its own to push the header past the viewport */
+  #navWho { display: block; max-width: 16ch; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+
+  /* The spacer exists to push "fetched at / Refresh" to the far right of a
+     single row. Once the row wraps it is a flex item that eats an entire line
+     and strands that group below the filters, so it stops being a spacer. */
+  .filters .spacer { display: none; }
+  .filters { gap: 8px 10px; }
+  /* a select given no basis refuses to shrink below its longest option, and a
+     project path is long; min-width is already on .fgroup, this is the other half */
+  select.project { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+
+  .card { padding: 14px 14px; }
+}
+
+@media (max-width: 430px) {
+  /* Below this the label and its control stop fitting side by side -- "Stack by"
+     plus a two-button segment is wider than the viewport. Wrapping inside the
+     group puts the label on its own line above the control it names, which is
+     still the pairing the group exists to preserve. */
+  .fgroup { flex-wrap: wrap; gap: 4px 7px; }
+  .fgroup .flabel { flex: 0 0 100%; }
+  /* the refresh group is a note and a button, not a label and a control: it
+     reads as one line or not at all */
+  .fgroup:last-child { flex-wrap: nowrap; }
+  .fgroup:last-child .flabel { flex: 0 1 auto; }
+
+  /* auto-fit already drops to one column here (280px of content cannot hold two
+     150px tracks), but the tile is then a full-width band and 26px numerals
+     over 14px of padding makes six of them most of the first screen */
+  .tiles { gap: 10px; }
+  .tile { padding: 12px 14px; }
+  .tile .value { font-size: 22px; }
+
+  /* the team invite pane puts a domain and a use count on one row; at this
+     width neither field is wide enough to type into */
+  .modal-row { flex-wrap: wrap; }
+  .modal-row input { flex: 1 1 100%; }
+  #teamMaxUses { max-width: none; }
+}
+
+/* Touch targets are about the pointer, not the viewport: a 24px-tall segment
+   button is just as hard to hit on an 11in tablet as on a phone. ~40px is the
+   floor, reached by padding so the type size and the radii stay as designed. */
+@media (pointer: coarse) {
+  .seg button { padding: 9px 12px; }
+  .viewtoggle button { padding: 8px 11px; }
+  button.refresh, .pager button { padding: 9px 14px; }
+  .navlink { padding: 9px 10px; }
+  .navlink.current { padding: 8px 9px; }
+  .account { padding: 9px 12px; }
+  .menu-item { padding: 10px 8px; }
+  select.project, .modal-row input, .modal-result input { padding: 9px 10px; }
+  /* a text-link button has no box to pad, so it gets an explicit one */
+  .linkbtn { min-height: 40px; display: inline-flex; align-items: center; }
+  .modal-close { min-height: 40px; }
+}

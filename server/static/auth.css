@@ -44,3 +44,16 @@ button.signin { width: 100%; margin-top: 6px; background: var(--ink); color: var
    character by character against the machine's screen */
 .devinput { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
             letter-spacing: 2px; text-transform: uppercase; }
+
+/* ---- narrow viewports ----
+   These pages are a single column already, so the only thing that goes wrong on
+   a phone is proportion: 14vh above the card and 26px of padding inside it are
+   measured against a desktop window. /device is the one that matters -- it is
+   approved from a phone while the machine asking sits in front of you -- and it
+   is also the tallest, so the space it wastes is space you have to scroll past
+   to reach the button. */
+@media (max-width: 430px) {
+  .login-wrap { margin-top: 5vh; padding: 0 14px; }
+  .login-card { padding: 20px 18px 18px; }
+  .devcode { font-size: 19px; padding: 11px 6px; }
+}

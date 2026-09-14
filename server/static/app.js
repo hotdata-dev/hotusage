@@ -327,7 +327,12 @@ function renderDailyChart(container, days) {
   container.replaceChildren();
   if (!days.length) { container.append(el('div', { class: 'empty', text: 'No usage in this range.' })); return; }
 
-  const availW = Math.max(container.clientWidth || 640, 320);
+  // The viewBox width has to BE the rendered width. Floor it above the box and
+  // `width: 100%` scales the whole coordinate system down to fit, which shrinks
+  // the 11px axis text with it -- at 320px that lands near 8px, and the density
+  // rule below then sizes columns for a plot wider than the one on screen. The
+  // 260 is only a guard for a container measured at zero (hidden, or mid-layout).
+  const availW = Math.max(container.clientWidth || 640, 260);
   const ml = 46, mr = 8, mt = 12, mb = 26, plotH = 230;
   const w = availW;
   const plotW = w - ml - mr;
@@ -436,9 +441,10 @@ function renderDailyTable(container, days) {
     tb.append(tr);
   }
   table.append(tb);
-  const box = el('div', { class: 'scroller' });
-  box.style.maxHeight = '320px';
-  box.style.overflowY = 'auto';
+  // vscroll, not inline styles: the height cap is layout, and the class also
+  // tells the stylesheet to leave this one out of the horizontal edge-shadow
+  // affordance, which would scroll away with the rows
+  const box = el('div', { class: 'scroller vscroll' });
   box.append(table);
   container.append(box);
 }
@@ -451,7 +457,9 @@ function renderDetailChart(container, points) {
   const n = points.length;
   if (!n) { container.append(el('div', { class: 'empty', text: 'No requests.' })); return; }
 
-  const availW = Math.max(container.clientWidth || 640, 320);
+  // same reason as the daily chart: a floor above the real box downscales the
+  // type along with the drawing
+  const availW = Math.max(container.clientWidth || 640, 260);
   const ml = 50, mr = 14, mt = 18, gap = 34, ctxH = 140, outH = 84, mb = 24;
   const w = availW, plotW = w - ml - mr;
   const outTop = mt + ctxH + gap;
@@ -704,7 +712,6 @@ function renderSessions(container, sessions) {
   }
   table.append(tb);
   const scroller = el('div', { class: 'scroller' });
-  scroller.style.overflowX = 'auto';
   scroller.append(table);
   container.append(scroller);
   if (pages > 1) container.append(buildPager(pages, start, pageRows.length, sorted.length));

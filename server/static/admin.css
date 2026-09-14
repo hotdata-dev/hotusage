@@ -60,3 +60,27 @@
    size from first paint, so nothing jumps when the state call lands. */
 .admintable .skel-cell { height: 12px; width: 68%; }
 .admintable td:first-child .skel-cell { width: 88%; }
+
+/* ---- narrow viewports ----
+   Same 760px threshold as app.css, for the same reason: one width at which the
+   whole product changes shape rather than a different one per page. */
+@media (max-width: 760px) {
+  /* The tables now live in a .scroller, which will happily crush five columns
+     into 300px of viewport and wrap every cell to three lines rather than
+     scroll. A floor makes it scroll instead, which is what the scroller is for.
+     520px is roughly what the widest of them (machines: member, machine,
+     access, last sync, revoke) needs before the dates start breaking. */
+  .admintable { min-width: 520px; }
+
+  /* The name field, its label and Save do not fit on one line. The input takes
+     the whole second line because it is the thing being edited; the 320px cap
+     that keeps it from running the width of a desktop card is what stops it
+     filling that line here, so it is lifted for this width only. */
+  .orgrow { flex-wrap: wrap; }
+  .orgrow input { flex: 1 1 100%; max-width: none; }
+
+  /* two placeholder-only inputs and a button, all of which have to be readable
+     before they are typed into */
+  .cardfoot input { flex: 1 1 100%; min-width: 0; }
+  .linkout input { min-width: 0; }
+}

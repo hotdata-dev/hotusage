@@ -36,16 +36,22 @@
           Invite people
         </button>
       </div>
-      <table class="admintable" id="members">
-        <thead>
-          <tr class="head"><th>Member</th><th>Role</th><th>Joined</th><th></th></tr>
-        </thead>
-        <tbody>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
-        </tbody>
-      </table>
+      <!-- Every roster here is five columns of names, dates and an action, which
+           cannot survive a phone's width. The scroller lets the table keep its
+           columns and carry the overflow itself, the way the dashboard's session
+           list already does, instead of pushing the whole page sideways. -->
+      <div class="scroller">
+        <table class="admintable" id="members">
+          <thead>
+            <tr class="head"><th>Member</th><th>Role</th><th>Joined</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+            <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+            <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card sysonly" hidden>
@@ -54,16 +60,18 @@
         <span class="spacer"></span>
         <span class="flabel">System admin</span>
       </div>
-      <table class="admintable" id="orgs">
-        <thead>
-          <tr class="head"><th>Organization</th><th>Slug</th><th>Members</th><th>Created</th><th></th></tr>
-        </thead>
-        <tbody>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
-        </tbody>
-      </table>
+      <div class="scroller">
+        <table class="admintable" id="orgs">
+          <thead>
+            <tr class="head"><th>Organization</th><th>Slug</th><th>Members</th><th>Created</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+            <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+            <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
       <div class="cardfoot">
         <input id="newOrgName" type="text" placeholder="Organization name"
                aria-label="Organization name">
@@ -81,15 +89,17 @@
 
     <div class="card adminonly">
       <div class="card-head"><h2>Pending invites</h2></div>
-      <table class="admintable" id="invites">
-        <thead>
-          <tr class="head"><th>Invite</th><th>Kind</th><th>Uses</th><th>Expires</th><th></th></tr>
-        </thead>
-        <tbody>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
-        </tbody>
-      </table>
+      <div class="scroller">
+        <table class="admintable" id="invites">
+          <thead>
+            <tr class="head"><th>Invite</th><th>Kind</th><th>Uses</th><th>Expires</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+            <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
       <div class="empty" id="invitesEmpty" hidden>
         No pending invites &mdash; invite someone from the Members card.
       </div>
@@ -97,15 +107,17 @@
 
     <div class="card adminonly">
       <div class="card-head"><h2>Signed-in machines</h2></div>
-      <table class="admintable" id="collectors">
-        <thead>
-          <tr class="head"><th>Member</th><th>Machine</th><th>Access</th><th>Last sync</th><th></th></tr>
-        </thead>
-        <tbody>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
-          <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
-        </tbody>
-      </table>
+      <div class="scroller">
+        <table class="admintable" id="collectors">
+          <thead>
+            <tr class="head"><th>Member</th><th>Machine</th><th>Access</th><th>Last sync</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+            <tr class="placeholder"><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td><div class="skel skel-cell"></div></td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
       <div class="empty" id="collectorsEmpty" hidden>
         Nobody has signed in a collector or a skill yet.
       </div>
