@@ -52,7 +52,18 @@ def hotdata_api_key():
 
 # ---------------------------------------------------------------------------
 # Pricing (USD per million tokens, provider list prices as of Sep 2026).
-# Estimates only — subscription plans don't bill per token.
+#
+# NOT USED BY THE SERVER. server.py imports this module only for the hotdata
+# ids, catalog names and API key; it never prices anything. Every cost_* column
+# is computed on the client and arrives already priced in the ingest payload, so
+# editing the rates here changes nothing anyone sees -- the live table is
+# `rates_claude` / `rates_claude_fast` / `rates_openai` in hotusage-client's
+# src/core.rs. This copy is a leftover from the original Python collector and is
+# kept only so that collector still runs; it has already drifted (it has no fast
+# mode branch, which the client now prices at a premium).
+#
+# These are list-price equivalents either way -- subscription plans bill a flat
+# per-seat fee and none of this.
 # ---------------------------------------------------------------------------
 def rates_claude(model):
     """(input, output) per MTok. Cache: read 0.1x, 5m write 1.25x, 1h write 2x."""
