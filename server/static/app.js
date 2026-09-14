@@ -162,6 +162,20 @@ function activeSeries() {
   return SERIES.map((sr) => ({ key: sr.key, label: sr.label, color: seriesColor(sr) }));
 }
 
+/// The bands that actually appear in `days` -- what the legend and the table
+/// header must list. Stacking by person, most of an org never shows up in a
+/// filtered week, and naming forty people beside four drawn bands makes the
+/// legend a directory rather than a key. Colours still come from the full
+/// dataset (see userSlots), so filtering narrows the list without repainting
+/// anyone who stayed.
+function drawnSeries(days) {
+  const all = activeSeries();
+  if (state.stackBy !== 'user') return all;
+  const totals = all.map(() => 0);
+  for (const row of days) dayVals(row, all).forEach((v, i) => { totals[i] += v; });
+  return all.filter((_, i) => totals[i] > 0);
+}
+
 function niceTicks(max, count) {
   if (max <= 0) return { ticks: [0, 1], top: 1 };
   const raw = max / count;
@@ -259,12 +273,14 @@ function dailyAgg(sessions) {
 
 const sessionTotal = (s) => (state.metric === 'tok' ? s.in + s.out + s.cr + s.cw : s.cost);
 const sessionVals = (s) => SERIES.map((sr) => (state.metric === 'tok' ? s[sr.key] : s[sr.ckey]));
-function dayVals(row) {
+// `series` defaults to everything stackable; the chart and the table pass the
+// bands they are drawing, so a value's index always matches its band.
+function dayVals(row, series) {
   if (state.stackBy !== 'user') {
     return SERIES.map((sr) => (state.metric === 'tok' ? row[sr.key] : row[sr.ckey]));
   }
   const pick = (v) => (state.metric === 'tok' ? v.tok : v.cost);
-  return activeSeries().map((s) => {
+  return (series || activeSeries()).map((s) => {
     if (s.members) {
       let sum = 0;
       for (const [who, v] of row.u || []) if (s.members.has(who)) sum += pick(v);
@@ -322,12 +338,16 @@ function renderDailyChart(container, days) {
   const barW = Math.max(1.5, Math.min(24, slot * 0.72));
   const weekly = !!days[0].week;
 
-  const totals = days.map((r) => dayVals(r).reduce((a, b) => a + b, 0));
+  const active = drawnSeries(days);
+  const totals = days.map((r) => dayVals(r, active).reduce((a, b) => a + b, 0));
   const { ticks, top } = niceTicks(Math.max(...totals), 4);
   const yOf = (v) => mt + plotH - (v / top) * plotH;
   const snap = (y) => Math.round(y) + 0.5; // crisp 1px hairlines
 
-  const root = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': 'Daily usage stacked by token type' });
+  // the label has to say what the bands are, or the two stacking modes are
+  // indistinguishable to a screen reader
+  const stacking = state.stackBy === 'user' ? 'stacked by person' : 'stacked by token type';
+  const root = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': `Daily usage ${stacking}` });
 
   for (const t of ticks) {
     if (t > 0) root.append(svg('line', { class: 'gridline', x1: ml, x2: ml + plotW, y1: snap(yOf(t)), y2: snap(yOf(t)) }));
@@ -346,9 +366,8 @@ function renderDailyChart(container, days) {
     }));
   });
 
-  const active = activeSeries();
   days.forEach((row, i) => {
-    const vals = dayVals(row);
+    const vals = dayVals(row, active);
     const g = svg('g', { class: 'day' });
     const x = ml + i * slot + (slot - barW) / 2;
     let cum = 0, firstDrawn = true, topSegIdx = -1;
@@ -403,14 +422,14 @@ function renderDailyChart(container, days) {
 function renderDailyTable(container, days) {
   container.replaceChildren();
   const table = el('table', { class: 'data' });
-  const active = activeSeries();
+  const active = drawnSeries(days);
   const trh = el('tr', null, el('th', { text: 'Date' }));
   for (const sr of active) trh.append(el('th', { class: 'num', text: sr.label }));
   trh.append(el('th', { class: 'num', text: 'Total' }));
   table.append(el('thead', null, trh));
   const tb = el('tbody');
   for (const row of [...days].reverse()) {
-    const vals = dayVals(row);
+    const vals = dayVals(row, active);
     const tr = el('tr', null, el('td', { text: fullDay(row.d) }));
     vals.forEach((v) => tr.append(el('td', { class: 'num', text: fmtMetricExact(v) })));
     tr.append(el('td', { class: 'num', text: fmtMetricExact(vals.reduce((a, b) => a + b, 0)) }));
@@ -789,11 +808,13 @@ function renderTiles(sessions) {
   }
 }
 
-function renderLegend() {
+function renderLegend(days) {
   const box = $('#dailyLegend');
   box.replaceChildren();
-  // always present: identity must never be carried by colour alone
-  for (const sr of activeSeries()) {
+  // always present: identity must never be carried by colour alone. Only the
+  // bands actually drawn, though -- a key naming colours that are nowhere in
+  // the chart is worse than no key.
+  for (const sr of drawnSeries(days)) {
     const sw = el('span', { class: 'swatch' });
     sw.style.background = sr.color;
     box.append(el('span', { class: 'item' }, sw, el('span', { text: sr.label })));
@@ -819,7 +840,7 @@ function render() {
   $('#dailyTitle').textContent = state.stackBy === 'user'
     ? `Daily usage by person (${unit})` : `Daily usage (${unit})`;
   renderTiles(sessions);
-  renderLegend();
+  renderLegend(days);
   renderDailyToggle();
   const dc = $('#dailyChart');
   if (state.dailyView === 'chart') renderDailyChart(dc, days);

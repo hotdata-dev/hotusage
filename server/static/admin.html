@@ -65,13 +65,15 @@
         </tbody>
       </table>
       <div class="cardfoot">
-        <input id="newOrgName" type="text" placeholder="Organization name">
-        <input id="newOrgOwner" type="email" placeholder="Owner email (optional)">
+        <input id="newOrgName" type="text" placeholder="Organization name"
+               aria-label="Organization name">
+        <input id="newOrgOwner" type="email" placeholder="Owner email (optional)"
+               aria-label="Owner email (optional)">
         <button class="refresh primary" id="orgCreate" type="button">Create organization</button>
       </div>
       <div class="modal-err" id="orgErr" hidden></div>
       <div class="linkout" id="orgLinkOut" hidden>
-        <input id="orgLinkValue" readonly>
+        <input id="orgLinkValue" readonly aria-label="Invite link for the new organization's owner">
         <button class="refresh" id="orgLinkCopy" type="button">Copy</button>
       </div>
 
@@ -129,14 +131,17 @@
       <div class="modal-err" id="inviteErr" hidden></div>
       <div id="invitePaneSingle">
         <div class="modal-row">
-          <input id="inviteEmail" type="email" placeholder="teammate@company.com">
+          <input id="inviteEmail" type="email" placeholder="teammate@company.com"
+                 aria-label="Email address to invite">
         </div>
         <p class="modal-hint">Bound to that address, valid 7 days, and dies the moment it is used.</p>
       </div>
       <div id="invitePaneTeam" hidden>
         <div class="modal-row">
-          <input id="teamDomain" type="text" placeholder="Domain (optional)">
-          <input id="teamMaxUses" type="number" min="0" step="1" placeholder="Max uses">
+          <input id="teamDomain" type="text" placeholder="Domain (optional)"
+                 aria-label="Email domain this link accepts (optional)">
+          <input id="teamMaxUses" type="number" min="0" step="1" placeholder="Max uses"
+                 aria-label="Maximum uses (0 for unlimited)">
         </div>
         <p class="modal-hint">
           Reusable for 30 days. Restrict it to your domain unless you are sharing it
@@ -145,7 +150,7 @@
         </p>
       </div>
       <div class="modal-result" id="linkOut" hidden>
-        <input id="linkValue" readonly>
+        <input id="linkValue" readonly aria-label="Invite link">
         <button class="refresh" id="linkCopy" type="button">Copy</button>
       </div>
       <div class="modal-actions">
