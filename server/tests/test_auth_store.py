@@ -97,15 +97,35 @@ class StatefulSysDb:
         flat = " ".join(query.split())
         table = re.search(r"FROM \S+\.public\.(\w+)", flat).group(1)
         out = [dict(r) for r in self.tables[table]]
-        if table == "users" and "LEFT JOIN" in flat:   # get_user / user_for_token
-            by_slug = {o["slug"]: o for o in self.tables["orgs"]}
+        by_slug = {o["slug"]: o for o in self.tables["orgs"]}
+
+        def with_org(r):
+            org = by_slug.get(r.get("org_slug"))
+            r["org_name"] = org["name"] if org else None
+            r["database_id"] = org["database_id"] if org else None
+            return r
+
+        if table == "users" and "LEFT JOIN" in flat:   # get_user
+            out = [with_org(r) for r in out]
+        # user_for_token: session -> user -> org, in one read
+        if table == "auth_sessions" and "JOIN" in flat:
+            by_email = {u["email"]: u for u in self.tables["users"]}
+            joined = []
             for r in out:
-                org = by_slug.get(r.get("org_slug"))
-                r["org_name"] = org["name"] if org else None
-                r["database_id"] = org["database_id"] if org else None
+                user = by_email.get(r.get("user_email"))
+                if user:
+                    joined.append(with_org({**user, **r}))
+            out = joined
         for col, val in re.findall(r"([\w.]+) = '([^']*)'", flat):
             col = col.split(".")[-1]
             out = [r for r in out if str(r.get(col, "")) == val]
+        # `col IN ('a', 'b')`, which is how the collector listing scopes itself
+        # to one org's members -- without it every org would read as holding
+        # every token, and a cross-org test would pass for the wrong reason
+        for col, vals in re.findall(r"([\w.]+) IN \(([^)]*)\)", flat):
+            col = col.split(".")[-1]
+            wanted = set(re.findall(r"'([^']*)'", vals))
+            out = [r for r in out if str(r.get(col, "")) in wanted]
         return out
 
     def load(self, table, rows, mode):
@@ -436,6 +456,81 @@ def test_removing_a_member_revokes_their_read_token_too():
     assert db.tables["token_scopes"] == [], db.tables["token_scopes"]
     assert auth.read_viewer(token) is None, "a removed member reads nothing"
     print("    bob removed, his read token is dead")
+
+
+def test_the_admin_listing_hands_out_no_collector_token():
+    """The admin page is JSON in a browser tab. A collector token in it is a
+    live credential for reporting (and, with `read`, for the whole org's usage)
+    sitting in whatever caches, extensions and screenshots that tab passes
+    through -- and nothing on the page ever needed the token itself."""
+    print("what an admin is told about a collector:")
+    auth, db = scoped_store()
+    token = approved_token(auth, "ada@x.dev", scope="ingest,read")
+    listed, = auth.org_collectors("acme-inc")
+    assert "token" not in listed, listed
+    assert token not in str(listed), "the credential leaked into the listing"
+    assert listed["token_ref"] == server.AuthStore.token_ref(token)
+    assert listed["user_email"] == "ada@x.dev" and listed["hostname"] == "laptop"
+    assert listed["scopes"] == ["ingest", "read"], listed
+    print(f"    ref {listed['token_ref']}, no token anywhere in the row")
+
+
+def test_a_collector_is_revoked_by_reference():
+    print("revoking by that reference:")
+    auth, db = scoped_store()
+    token = approved_token(auth, "ada@x.dev", scope="read")
+    ref = auth.org_collectors("acme-inc")[0]["token_ref"]
+    assert auth.read_viewer(token), "it reads before the revoke"
+    auth.revoke_collector_token_for_org(ref, "acme-inc")
+    assert db.tables["collector_tokens"] == [], "the credential is gone"
+    assert auth.read_viewer(token) is None, "and stops working at once"
+    refuses(lambda: auth.revoke_collector_token_for_org(ref, "acme-inc"),
+            "no such collector")
+    print("    revoked, and the spent ref refuses a second time")
+
+
+def test_a_reference_only_works_inside_its_own_org():
+    """Resolving the ref against the org's OWN tokens is what scopes it: an
+    admin who learns another org's ref (it is not a secret) still finds nothing
+    to match it against here."""
+    print("a reference borrowed from another organization:")
+    auth, db = scoped_store()
+    auth.create_account("bob@y.dev", "hunter2hunter2")
+    auth.create_org_for("bob@y.dev", "Beta Co")
+    bob_token = approved_token(auth, "bob@y.dev", hostname="bob-laptop")
+    bob_ref = auth.org_collectors("beta-co")[0]["token_ref"]
+    assert [c["user_email"] for c in auth.org_collectors("acme-inc")] == []
+    refuses(lambda: auth.revoke_collector_token_for_org(bob_ref, "acme-inc"),
+            "no such collector")
+    assert auth.collector_token_user(bob_token) == "bob@y.dev", \
+        "bob's collector must survive it"
+    print("    refused, bob's collector untouched")
+
+
+def test_a_cached_session_is_re_read_within_a_minute():
+    """A session lives 30 days; the cached copy of it must not. Several
+    instances serve this app, and a sign-out is a row delete one of them
+    performs -- every other instance keeps honouring the cookie until its own
+    cached viewer lapses."""
+    print("how long a signed-in viewer stays cached:")
+    import time as clock
+    auth, db = scoped_store()
+    token = "session-token-" + "a" * 24
+    expires = clock.time() + server.SESSION_TTL
+    db.load("auth_sessions", [{"token": token, "user_email": "ada@x.dev",
+                               "expires_at": expires}], "upsert")
+    assert auth.user_for_token(token)["email"] == "ada@x.dev"
+    viewer, until = auth.token_cache[token]
+    assert until <= clock.time() + auth.TOKEN_CACHE_TTL + 1, until
+    assert expires - until > 29 * 86400, "the row still expires in 30 days"
+    print(f"    session expires in 30d, cached for {auth.TOKEN_CACHE_TTL}s")
+
+    # what the next instance's minute looks like: the row is gone, the cache
+    # entry has lapsed, and the cookie stops working without a restart
+    auth.token_cache[token] = (viewer, clock.time() - 1)
+    db.load("auth_sessions", [{"token": token}], "delete")
+    assert auth.user_for_token(token) is None, "a deleted session must not read"
+    print("    once the cap passes, a revoked session is refused")
 
 
 if __name__ == "__main__":

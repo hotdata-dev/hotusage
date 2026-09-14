@@ -34,21 +34,8 @@
 .dot.stale { background: var(--stale); }
 .dot.never { background: transparent; box-shadow: inset 0 0 0 1.5px var(--baseline); }
 
-/* ---- break-glass disclosure ----
-   For a control used a few times a year that would otherwise be the loudest
-   thing on the page. Native <details>: keyboard-operable with no JS. */
-details.adv { border: 1px solid var(--border); border-radius: 8px; margin-top: 10px; }
-details.adv > summary { cursor: pointer; padding: 8px 11px; color: var(--ink-2);
-                        font-size: 12.5px; font-weight: 600; list-style: none;
-                        display: flex; align-items: center; gap: 8px; border-radius: 8px; }
-details.adv > summary::-webkit-details-marker { display: none; }
-details.adv > summary::before { content: "\25B8"; color: var(--muted); font-size: 10px; }
-details.adv[open] > summary::before { content: "\25BE"; }
-details.adv > summary:hover { color: var(--ink); }
-details.adv > .adv-body { padding: 12px 11px 12px; border-top: 1px solid var(--border); }
-.advrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 /* an error reporting a form's failure sits under that form, not against it */
-.advrow + .modal-err, .cardfoot + .modal-err { margin-top: 10px; }
+.cardfoot + .modal-err { margin-top: 10px; }
 
 .rowactions { display: flex; gap: 10px; justify-content: flex-end; }
 .linkbtn { background: none; border: 0; padding: 0; font: inherit; font-size: 12.5px;
@@ -73,14 +60,3 @@ details.adv > .adv-body { padding: 12px 11px 12px; border-top: 1px solid var(--b
    size from first paint, so nothing jumps when the state call lands. */
 .admintable .skel-cell { height: 12px; width: 68%; }
 .admintable td:first-child .skel-cell { width: 88%; }
-
-/* the notice, in its danger form: for controls whose blast radius is a whole
-   organization's data rather than one row */
-.notice.danger { background: var(--danger-bg); border-color: var(--danger-edge);
-                 color: var(--ink); }
-.notice.danger b { color: var(--ink); }
-.advrow input, .advrow select { background: var(--page); color: var(--ink);
-                                border: 1px solid var(--border); border-radius: 8px;
-                                padding: 8px 10px; font: inherit; font-size: 13px; }
-.advrow #dbId { min-width: 240px; flex: 1; max-width: 340px;
-                font-variant-numeric: tabular-nums; }

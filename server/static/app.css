@@ -107,10 +107,6 @@ button.refresh.primary {
   background: var(--s-out); border-color: var(--s-out); color: #fff; font-weight: 600;
 }
 button.refresh.primary:hover { color: #fff; filter: var(--lift); }
-button.refresh.danger-out {
-  background: transparent; border-color: var(--danger-edge); color: var(--danger);
-}
-button.refresh.danger-out:hover { color: var(--danger); background: var(--danger-bg); }
 button.refresh:disabled { opacity: 0.45; cursor: default; }
 
 /* ---- filter row: one row, above everything it scopes ----
@@ -153,7 +149,6 @@ select.project {
 .legend { display: flex; gap: 14px; flex-wrap: wrap; }
 .legend .item { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 12.5px; }
 .legend .swatch { width: 10px; height: 10px; border-radius: 3px; }
-.legend .linekey { width: 14px; height: 2px; border-radius: 1px; }
 .viewtoggle { display: inline-flex; gap: 2px; }
 .viewtoggle button {
   border: 1px solid var(--border); background: transparent; color: var(--muted);
@@ -246,7 +241,6 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .modal-close { background: transparent; border: 0; color: var(--muted); font: inherit;
                font-size: 12.5px; cursor: pointer; padding: 2px 0; }
 .modal-close:hover { color: var(--ink); }
-.modal-or { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
 #teamMaxUses { max-width: 110px; }
 .modal-hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
 .modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }

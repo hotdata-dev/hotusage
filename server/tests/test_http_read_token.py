@@ -70,11 +70,14 @@ def boot():
     return httpd, base, read_token, ingest_token
 
 
-def call(base, path, token=None, method="GET", body=None, gzip_ok=False):
+def call(base, path, token=None, method="GET", body=None, gzip_ok=False,
+         headers=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(base + path, data=data, method=method)
     if token:
         req.add_header("Authorization", f"Bearer {token}")
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
     if data:
         req.add_header("Content-Type", "application/json")
     if gzip_ok:
@@ -167,6 +170,39 @@ def test_the_collector_signout_revokes_a_read_token_too():
     assert status == 200 and json.loads(raw)["revoked"] is True, raw[:200]
     assert call(BASE, "/api/status", token)[0] == 401, "it must stop working"
     print("    signed out, and the token stops working at once")
+
+
+def test_a_bearer_token_with_trailing_whitespace_still_ingests():
+    """/ingest carried its own copy of the bearer parser, and the copy did not
+    strip. A token with a trailing space therefore authenticated every read
+    route and 401ed here -- one credential, two answers, depending on how the
+    shell that stored it handled the newline."""
+    print("a token a shell left a space on:")
+    body = {"user_email": "ada@x.dev", "hostname": "laptop", "sessions": []}
+    status, raw = call(BASE, "/ingest", INGEST + " ", method="POST", body=body)
+    assert status == 200, (status, raw[:200])
+    print("    200 POST /ingest, same as without it")
+
+
+def test_a_cross_origin_post_is_refused():
+    """Defence in depth: the session cookie is SameSite=Lax, so a cross-site
+    POST carries no credential in any current browser. This covers the ground
+    beside that -- a browser old enough to ignore SameSite, and a sibling
+    subdomain, which is same-site and does send the cookie."""
+    print("a POST claiming to come from somewhere else:")
+    body = {"user_email": "ada@x.dev", "hostname": "laptop", "sessions": []}
+    for origin in ("https://evil.example", "http://127.0.0.1:1",
+                   "https://" + BASE.split("//")[1]):
+        status, raw = call(BASE, "/ingest", INGEST, method="POST", body=body,
+                           headers={"Origin": origin})
+        assert status == 403, (origin, status, raw[:200])
+        print(f"    403 Origin: {origin}")
+    # our own origin, and no Origin at all (collectors, curl, the skill)
+    same = call(BASE, "/ingest", INGEST, method="POST", body=body,
+                headers={"Origin": BASE})
+    assert same[0] == 200, same
+    assert call(BASE, "/ingest", INGEST, method="POST", body=body)[0] == 200
+    print("    200 with a matching Origin, and with none at all")
 
 
 if __name__ == "__main__":

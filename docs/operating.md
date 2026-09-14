@@ -22,8 +22,14 @@ export HOTUSAGE_INGEST_TOKEN=<shared secret>       # unset = dev mode (accepts a
 .venv/bin/python server/server.py --host 0.0.0.0 --port 8377
 ```
 
-Or use the Dockerfile. Bind `0.0.0.0` only behind a VPN or reverse proxy. First
-boot seeds an initial admin user and prints its generated password once.
+Or use the Dockerfile. Bind `0.0.0.0` only behind a VPN or reverse proxy: with
+`HOTUSAGE_INGEST_TOKEN` unset the server now refuses to start on a non-loopback
+address at all, since dev mode accepts anonymous writes (`--allow-open-ingest`
+overrides that for a deliberate setup). The image also sets
+`HOTUSAGE_TRUSTED_PROXY=1`, which is what lets the rate limiter believe
+`X-Forwarded-For`; run directly, that header is whatever the caller typed and is
+ignored. First boot seeds an initial admin user and prints its generated
+password once.
 
 Signing up is self-serve: `/register` creates the account, `/setup` asks for an
 organization name and provisions its database — that person becomes the org's
@@ -126,9 +132,10 @@ The server never prices anything; it stores the `cost_*` columns the ingest
 payload already carries. To reprice a provider, edit `rates_claude` /
 `rates_claude_fast` / `rates_openai` in **hotusage-client's** `src/core.rs`.
 
-The copy in this repo's `core.py` is a leftover from the original Python
-collector, is not what the dashboard shows, and has already drifted (it has no
-fast-mode branch). It is labelled as unused at the top of its pricing block.
+This repo's `core.py` used to carry a Python copy of those tables, for a
+collector that no longer lives here. It had drifted from the live ones and was
+not what the dashboard showed, so it is gone: `core.py` is now the hotdata ids,
+the catalog names and the API key lookup, and nothing else.
 
 For **actual** spend rather than list-price equivalents: the spend report at
 `claude.ai/admin-settings/usage` exports per-user, per-model cost as a daily

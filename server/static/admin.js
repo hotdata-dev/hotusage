@@ -201,7 +201,8 @@ function renderCollectors() {
       .filter(Boolean).join(', and ');
     const revoke = action('Revoke', true, () => {
       if (!confirm(`Revoke ${c.hostname || 'that machine'}? It ${loses}.`)) return;
-      act(() => api('/api/admin/revoke-token', { token: c.token }));
+      // token_ref, never the token: the state payload carries no credential
+      act(() => api('/api/admin/revoke-token', { ref: c.token_ref }));
     });
     // when it signed in answers no routine question; last sync does, so the
     // join date rides along as the machine's title

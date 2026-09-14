@@ -19,8 +19,13 @@
       <div class="err" id="err">{{ERROR}}</div>
 
       <div id="confirm" hidden>
-        <p class="devtext">hotusage on <b>{{HOST}}</b> is asking to sign in as
-          <b>{{EMAIL}}</b> and:</p>
+        <!-- the hostname is whatever that machine said it was called, so it is
+             shown as a quoted value rather than woven into the sentence: a
+             machine named "your account" must not be able to read as prose -->
+        <p class="devtext">A machine is asking to sign in as <b>{{EMAIL}}</b>
+          and:</p>
+        <p class="devtext">machine name (self-reported):
+          <span class="devhost">{{HOST}}</span></p>
         <ul class="devtext" id="grants">
           <li id="grant-ingest" hidden>report this machine's coding-agent usage
             as you</li>
@@ -29,10 +34,17 @@
             answer questions about it</li>
         </ul>
         <p class="devtext"><b>Only approve this if you just started a sign-in
-          on that machine.</b> Check the code matches the one it showed you:</p>
-        <div class="devcode">{{CODE}}</div>
-        <form method="post" action="/device/approve">
-          <input type="hidden" name="user_code" value="{{CODE}}">
+          on that machine.</b> Type the code it is showing you:</p>
+        <!-- typed, not prefilled: the code is the only evidence the person
+             clicking Approve is actually sitting at the machine that asked -->
+        <form method="post" action="/device/approve?code={{CODE}}">
+          <div class="field">
+            <label for="user_code">Code shown on that machine</label>
+            <input id="user_code" name="user_code" type="text" required autofocus
+                   class="devinput" autocomplete="off" autocapitalize="off"
+                   autocorrect="off" spellcheck="false" maxlength="20"
+                   placeholder="code shown on that machine">
+          </div>
           <button class="signin" type="submit" id="approve">Approve</button>
         </form>
         <div class="alt">Not you? Close this page and the request expires on its own.</div>

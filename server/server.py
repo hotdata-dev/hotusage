@@ -221,6 +221,12 @@ class HotdataClient:
                 ))
         return self._client
 
+    # How long the truncated-result loop below may keep asking. A result that
+    # stays 'pending' has no other exit: the loop would hold this request's
+    # thread for the life of the process, and a handful of them would take the
+    # server's whole pool with it.
+    PAGING_DEADLINE = 120
+
     def sql(self, query, timeout=None):
         import hotdata
         client = self.client()
@@ -231,8 +237,16 @@ class HotdataClient:
         if resp.truncated and resp.result_id:
             results = hotdata.ResultsApi(client)
             total = resp.total_row_count
+            # monotonic: a clock step backwards during a long page-through must
+            # not extend the deadline past it
+            deadline = time.monotonic() + (timeout or self.PAGING_DEADLINE)
             while total is None or len(rows) < total:
-                r = results.get_result(resp.result_id, self.db, offset=len(rows))
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"hotdata result {resp.result_id} did not finish paging "
+                        f"within {timeout or self.PAGING_DEADLINE}s")
+                r = results.get_result(resp.result_id, self.db, offset=len(rows),
+                                       _request_timeout=timeout)
                 if getattr(r, "status", None) in ("pending", "processing"):
                     time.sleep(1)
                     continue
@@ -250,6 +264,13 @@ class HotdataClient:
         except Exception as e:
             msg = str(e).lower()
             if "not found" in msg or "has no data" in msg:
+                # Text matching, not exception classes: the SDK import is lazy,
+                # so there is no class to catch here. That makes this branch wide
+                # enough to swallow a genuinely broken query, so say so -- an
+                # empty table is normal, a misspelled column is not, and only the
+                # log can tell the two apart afterwards.
+                print(f"note: empty result treated as no rows: {str(e)[:120]}",
+                      file=sys.stderr)
                 return []
             raise
 
@@ -474,7 +495,7 @@ class AuthStore:
                   "org_name": u["org_name"] or u["org_slug"],
                   "database_id": u["database_id"]}
         with self.lock:
-            self.token_cache[token] = (viewer, expires)
+            self.token_cache[token] = (viewer, self._cache_until(expires))
         self._purge_expired()
         return token
 
@@ -486,27 +507,27 @@ class AuthStore:
         except Exception as e:
             print(f"warn: logout delete: {e}", file=sys.stderr)
 
+    # (table, table whose rows share this one's key and die with it)
+    EXPIRING_TABLES = (("auth_sessions", None), ("invites", None),
+                       ("team_invites", None), ("device_codes", "device_scopes"))
+
     def _purge_expired(self):
-        try:
-            rows = self.sysdb.rows(f"SELECT token FROM {SYS}.public.auth_sessions "
-                                   f"WHERE expires_at < {time.time()}")
-            if rows:
-                self.sysdb.load("auth_sessions", rows, "delete")
-            inv = self.sysdb.rows(f"SELECT token FROM {SYS}.public.invites "
-                                  f"WHERE expires_at < {time.time()}")
-            if inv:
-                self.sysdb.load("invites", inv, "delete")
-            team = self.sysdb.rows(f"SELECT token FROM {SYS}.public.team_invites "
-                                   f"WHERE expires_at < {time.time()}")
-            if team:
-                self.sysdb.load("team_invites", team, "delete")
-            dev = self.sysdb.rows(f"SELECT device_code FROM {SYS}.public.device_codes "
-                                  f"WHERE expires_at < {time.time()}")
-            if dev:
-                self.sysdb.load("device_codes", dev, "delete")
-                self.sysdb.load("device_scopes", dev, "delete")
-        except Exception as e:
-            print(f"warn: session purge: {e}", file=sys.stderr)
+        """Sweep every expired row. Per table, because one unreachable or
+        not-yet-created table used to abort the sweep for all of them -- the
+        tables purged after it then grew without bound, and nothing said so."""
+        now = time.time()
+        for table, extra in self.EXPIRING_TABLES:
+            try:
+                key = TABLES[table]["key"][0]
+                rows = self.sysdb.rows(f"SELECT {key} FROM {SYS}.public.{table} "
+                                       f"WHERE expires_at < {now}")
+                if not rows:
+                    continue
+                self.sysdb.load(table, rows, "delete")
+                if extra:
+                    self.sysdb.load(extra, rows, "delete")
+            except Exception as e:
+                print(f"warn: purge {table}: {e}", file=sys.stderr)
 
     def user_for_token(self, token):
         if not token or not re.match(r"^[A-Za-z0-9_-]{20,64}$", token):
@@ -528,8 +549,19 @@ class AuthStore:
                   "org_name": r["org_name"] or r["org_slug"],
                   "database_id": r["database_id"]}
         with self.lock:
-            self.token_cache[token] = (viewer, float(r["expires_at"]))
+            self.token_cache[token] = (viewer, self._cache_until(r["expires_at"]))
         return viewer
+
+    # A session lives 30 days; a cache entry must not. App Runner may run
+    # several instances, and a sign-out or a removal is a row delete seen by
+    # whichever instance served it -- every other one keeps honouring the
+    # cookie until its cached copy lapses. A minute matches read_cache and
+    # scope_cache; the row's real expiry is still what decides the auth.
+    TOKEN_CACHE_TTL = 60
+
+    @classmethod
+    def _cache_until(cls, expires_at):
+        return min(float(expires_at), time.time() + cls.TOKEN_CACHE_TTL)
 
     READ_TOKEN_TTL = 60
 
@@ -875,10 +907,6 @@ class AuthStore:
         return {"members": [{**r, "is_admin": r["email"] in got["admins"]} for r in rows],
                 "admins": got["admins"], "active": active}
 
-    def members(self, org_slug):
-        """Everyone who belongs to the org (active there or not)."""
-        return self.roster(org_slug)["members"]
-
     def remove_from_org(self, email, org_slug):
         """Remove one membership. The account (logins, collectors) survives
         while other memberships remain -- an admin of one org has no authority
@@ -961,12 +989,17 @@ class AuthStore:
                 return
         raise ValueError("no such invite in this organization")
 
-    def revoke_collector_token_for_org(self, token, org_slug):
-        email = self.collector_token_user(token, scope=None)
-        user = self.get_user(email) if email else None
-        if not user or user["org_slug"] != org_slug:
-            raise ValueError("no such collector in this organization")
-        self.revoke_collector_token(token)
+    def revoke_collector_token_for_org(self, ref, org_slug):
+        """Revoke by REFERENCE, not by credential. The admin page is handed
+        token_ref for every collector it lists (see org_collectors), so the
+        browser -- and anything that ever sees that response -- never holds a
+        token it could use. The ref is resolved against this org's own tokens,
+        which is also what keeps one org's admin from revoking another's."""
+        for row in self._org_token_rows(org_slug):
+            if self.token_ref(row["token"]) == ref:
+                self.revoke_collector_token(row["token"])
+                return
+        raise ValueError("no such collector in this organization")
 
     def org_invites(self, org_slug):
         both = gather(
@@ -981,11 +1014,21 @@ class AuthStore:
         now = time.time()
         return [i for i in invites if float(i["expires_at"]) > now]
 
-    def org_collectors(self, org_slug, active=None):
-        # ACTIVE members only: a collector routes ingest to its owner's active
-        # org, so a member active elsewhere reports elsewhere -- listing their
-        # token here would expose a credential this org cannot even revoke.
-        # `active` is that same set, when the caller has already read it.
+    @staticmethod
+    def token_ref(token):
+        """A short, stable handle for a collector token that is not itself a
+        credential. Computed rather than stored: hotdata fixes a table's columns
+        at first write, so collector_tokens can never gain a column, and a side
+        table would be one more thing to keep in step with a revoke."""
+        return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+    def _org_token_rows(self, org_slug, active=None):
+        """The raw collector-token rows belonging to this org, tokens included.
+
+        ACTIVE members only: a collector routes ingest to its owner's active
+        org, so a member active elsewhere reports elsewhere -- listing their
+        token here would expose a credential this org cannot even revoke.
+        `active` is that same set, when the caller has already read it."""
         emails = sorted(active) if active is not None else [
             r["email"] for r in self.sysdb.rows(
                 f"SELECT email FROM {SYS}.public.users "
@@ -993,9 +1036,17 @@ class AuthStore:
         if not emails:
             return []
         wanted = ", ".join(sql_str(e) for e in emails)
-        toks = self.sysdb.rows(
+        return self.sysdb.rows(
             f"SELECT token, user_email, hostname, created_at "
             f"FROM {SYS}.public.collector_tokens WHERE user_email IN ({wanted})")
+
+    def org_collectors(self, org_slug, active=None):
+        # The token itself never leaves this method: what the admin page needs
+        # is a handle to revoke by, not the bearer credential, and /api/admin/
+        # state is JSON in a browser tab.
+        toks = self._org_token_rows(org_slug, active)
+        if not toks:
+            return []
         tokens = ", ".join(sql_str(t["token"]) for t in toks) or "''"
         both = gather(
             used=lambda: self.sysdb.rows(
@@ -1009,7 +1060,10 @@ class AuthStore:
         # is listed (and revocable) here rather than hidden for not being a
         # collector. The scope rides along so the page can say what each may do.
         scopes = {s["token"]: s["scope"] for s in both["scopes"]}
-        return [{**t, "last_used_at": used.get(t["token"]),
+        return [{"token_ref": self.token_ref(t["token"]),
+                 "user_email": t["user_email"], "hostname": t["hostname"],
+                 "created_at": t["created_at"],
+                 "last_used_at": used.get(t["token"]),
                  "scopes": self.describe_scopes(scopes.get(t["token"], ""))}
                 for t in toks]
 
@@ -1394,6 +1448,20 @@ class HotdataStore:
             self.cache.clear()
             self.encoded.clear()
 
+    # Neither cache expires an entry on its own -- entries are only replaced or
+    # dropped wholesale by invalidate() -- and both are keyed by something a
+    # caller chooses (a session id, a viewer's window). A read token walking
+    # ids would otherwise grow these until the process died, so at the cap the
+    # oldest entry makes way. Generous: an org's real working set is far below
+    # this, and the payload cache holds a handful of windows per viewer.
+    MAX_ENTRIES = 4096
+
+    def _store(self, cache, key, value):
+        """Caller must hold the lock."""
+        if key not in cache and len(cache) >= self.MAX_ENTRIES:
+            del cache[min(cache, key=lambda k: cache[k][0])]
+        cache[key] = value
+
     def encoded_payload(self, key, build, fresh=False):
         """Gzipped JSON for one viewer, cached beside the rows it is built
         from. Repeat loads then cost a dict lookup instead of a few MB of
@@ -1405,17 +1473,22 @@ class HotdataStore:
                 return hit[1]
         body = gzip.compress(json.dumps(build()).encode(), 6)
         with self.lock:
-            self.encoded[key] = (now, body)
+            self._store(self.encoded, key, (now, body))
         return body
 
-    def _cached(self, key, fn, fresh=False):
+    def _cached(self, key, fn, fresh=False, keep=None):
+        """`keep` decides whether the answer is worth remembering. A miss is
+        not: caching one turns "session that does not exist" into a permanent
+        entry, which is a key an outsider gets to choose."""
         with self.lock:
             hit = self.cache.get(key)
             if hit and not fresh and time.time() - hit[0] < self.ttl:
                 return hit[1]
         val = fn()
+        if keep is not None and not keep(val):
+            return val
         with self.lock:
-            self.cache[key] = (time.time(), val)
+            self._store(self.cache, key, (time.time(), val))
         return val
 
     def data(self, fresh=False, days=None):
@@ -1491,7 +1564,7 @@ class HotdataStore:
         # rides with the expansion rather than with the whole list. It also
         # decides whether the session exists at all: a session with no request
         # rows yet is real, just not chartable.
-        cwd = self._cached("cwd:" + session_id, fetch_cwd)
+        cwd = self._cached("cwd:" + session_id, fetch_cwd, keep=bool)
         if not cwd:
             return None
         return {"id": session_id, "detail": self._cached("detail:" + session_id, fetch),
@@ -1556,6 +1629,14 @@ class Handler(BaseHTTPRequestHandler):
     token = None       # ingest bearer token ('' = dev mode, accept all)
     max_body = 64 * 1024 * 1024
 
+    # socketserver sets this on the connection socket, so a peer that opens a
+    # connection and then dribbles (or never sends) a request line gives its
+    # thread back after 30s instead of holding it forever. A slow uploader on
+    # a real ingest still fits: the timeout is per socket operation, not per
+    # request. Slowloris needs one thread per held connection to hurt, and a
+    # ThreadingHTTPServer hands out exactly that.
+    timeout = 30
+
     # Below this, framing and headers cost more than the bytes saved.
     GZIP_MIN = 1024
 
@@ -1581,6 +1662,20 @@ class Handler(BaseHTTPRequestHandler):
         # misrouted response must not be promoted to script by the browser.
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("X-Content-Type-Options", "nosniff")
+        # Everything this server serves comes from static/, so 'self' is the
+        # whole allow-list: no CDN, no font host, no analytics. The two
+        # 'unsafe-inline' grants are the honest cost of how the pages are
+        # built -- login/register/invite/device each end in a small inline
+        # script (static template text, no request data reaches it unescaped),
+        # and the chart's per-series fills and the nav mark carry CSS
+        # variables in inline style attributes, which is the only spelling
+        # that resolves var() for SVG in every browser. frame-ancestors is
+        # X-Frame-Options for browsers that prefer CSP.
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self'; "
+            "frame-ancestors 'none'")
         # no-store is the right default: API responses are private, per-viewer
         # data. Static assets override it -- see _static.
         self.send_header("Cache-Control", cache or "no-store")
@@ -1650,11 +1745,28 @@ class Handler(BaseHTTPRequestHandler):
     LOGIN_RATE_LIMIT = 30      # one address from one IP
     LOGIN_IP_RATE_LIMIT = 300  # everything from one IP; also bounds pair-bucket growth
 
-    def _rate_limited(self, bucket, limit=None, record=True):
+    # X-Forwarded-For is a client-supplied header. It is only evidence when
+    # something in front of us rewrites it, so trusting it is opt-in: App
+    # Runner sets HOTUSAGE_TRUSTED_PROXY (see the Dockerfile), and a server
+    # reachable directly falls back to the peer address, which cannot be
+    # forged. Without this gate an attacker mints a fresh identity per request
+    # and every limit below is decoration.
+    TRUST_FORWARDED_FOR = bool(os.environ.get("HOTUSAGE_TRUSTED_PROXY"))
+    # One entry per (bucket, IP) and nothing evicts between purges, so the
+    # table itself is a memory lever. At the cap, the least recently hit key
+    # makes way -- it is also the one closest to ageing out anyway.
+    MAX_RATE_KEYS = 10_000
+
+    def _client_ip(self):
+        if not self.TRUST_FORWARDED_FOR:
+            return self.client_address[0]
         # rightmost X-Forwarded-For entry: proxies (App Runner/ALB) append the
         # real peer to a client-supplied header, so position 0 is spoofable.
         fwd = self.headers.get("X-Forwarded-For", "")
-        ip = fwd.split(",")[-1].strip() if fwd.strip() else self.client_address[0]
+        return fwd.split(",")[-1].strip() if fwd.strip() else self.client_address[0]
+
+    def _rate_limited(self, bucket, limit=None, record=True):
+        ip = self._client_ip()
         key = f"{bucket}:{ip}"
         now = time.time()
         with Handler._rate_lock:
@@ -1673,6 +1785,10 @@ class Handler(BaseHTTPRequestHandler):
             if record:
                 hits.append(now)
             if hits:
+                if key not in Handler._rate and \
+                        len(Handler._rate) >= self.MAX_RATE_KEYS:
+                    oldest = min(Handler._rate, key=lambda k: Handler._rate[k][-1])
+                    del Handler._rate[oldest]
                 Handler._rate[key] = hits
             else:
                 Handler._rate.pop(key, None)  # never keep an empty bucket
@@ -1698,13 +1814,73 @@ class Handler(BaseHTTPRequestHandler):
         return cookie
 
     def _page(self, name, subs=None):
-        """Serve a static page with {{PLACEHOLDER}} substitution, HTML-escaped."""
+        """Serve a static page with {{PLACEHOLDER}} substitution, HTML-escaped.
+
+        One pass over the template, not one pass per key: substituting key by
+        key re-scanned each value with the keys that followed it, so a value
+        the attacker chose (a collector's self-reported hostname, say) spelled
+        `{{EMAIL}}` was replaced in turn and rendered as the victim's address.
+        An unknown placeholder is left as written, as it always was."""
         fp = os.path.join(STATIC_DIR, name)
         with open(fp, encoding="utf-8") as f:
             body = f.read()
-        for k, v in (subs or {}).items():
-            body = body.replace("{{" + k + "}}", html.escape(str(v)))
+        subs = subs or {}
+        body = re.sub(r"\{\{(\w+)\}\}",
+                      lambda m: html.escape(str(subs.get(m.group(1), m.group(0)))),
+                      body)
         self._send(200, body.encode(), "text/html; charset=utf-8")
+
+    # /device used to render whatever ?err= said. A link is something anyone
+    # can send, and the page it lands on is the page that binds a collector to
+    # an account -- so the sentence above the Approve button has to come from
+    # here, not from the URL. Same shape the login page uses.
+    DEVICE_ERRORS = {
+        "expired": "That sign-in request is invalid, expired, or already approved.",
+        "nomatch": "That code did not match a waiting sign-in request. Check the "
+                   "code on that machine and type it again - if it has expired, "
+                   "start the sign-in there once more.",
+    }
+
+    @classmethod
+    def _device_error(cls, code):
+        if not code:
+            return ""
+        return cls.DEVICE_ERRORS.get(code, "That did not work. Check the code on "
+                                           "that machine and try again.")
+
+    # The user code alphabet plus the group separator, and nothing else: this
+    # value is echoed into the page and into a Location header.
+    DEVICE_CODE_RE = re.compile(r"^[A-Z0-9-]{0,20}$")
+
+    @classmethod
+    def _device_param(cls, query):
+        """The ?code= of a /device URL, normalised the way approvals are."""
+        code = (parse_qs(query).get("code", [""])[0] or "").strip().upper()
+        return code if cls.DEVICE_CODE_RE.match(code) else ""
+
+    @staticmethod
+    def _device_url(code, err=""):
+        parts = []
+        if code:
+            parts.append("code=" + quote(code))
+        if err:
+            parts.append("err=" + quote(err))
+        return "/device" + ("?" + "&".join(parts) if parts else "")
+
+    def _read_json(self, limit=4096):
+        """The JSON body of a POST, or {} when there is none.
+
+        Raises ValueError for a Content-Length that is not a number, so the
+        caller's 400 says "bad content length" rather than repeating int()'s
+        message about whatever the client sent."""
+        raw = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError("bad content length")
+        if length <= 0 or length > limit:
+            return {}
+        return json.loads(self.rfile.read(length))
 
     def _read_form(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -1832,8 +2008,28 @@ class Handler(BaseHTTPRequestHandler):
         session = self.auth.login(email, password)
         self._redirect("/", extra=[("Set-Cookie", self._session_cookie(session))])
 
+    def _origin_ok(self):
+        """Defence in depth, not the CSRF defence.
+
+        The session cookie is spelled SameSite=Lax explicitly, and no current
+        browser sends a Lax cookie on a cross-site POST -- cross-site form
+        submissions already arrive with no credential at all. What this adds is
+        the ground beside that: a browser old enough to ignore SameSite, and a
+        page on a SIBLING SUBDOMAIN, which is same-site and so does send the
+        cookie. A missing Origin is allowed, because collectors, curl and the
+        skill send none and authenticate with a bearer token that a browser
+        never attaches on its own."""
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        proto, host = self._public_origin()
+        return origin == f"{proto}://{host}"
+
     def do_POST(self):
         path = urlparse(self.path).path
+        if not self._origin_ok():
+            self._json({"error": "cross-origin request refused"}, 403)
+            return
         if path == "/register":
             try:
                 self._handle_register()
@@ -1865,8 +2061,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.auth.is_admin(viewer["email"], viewer["org_slug"]):
                     self._json({"error": "only an organization admin can invite"}, 403)
                     return
-                length = int(self.headers.get("Content-Length", 0))
-                payload = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+                payload = self._read_json()
                 proto, host = self._public_origin()
                 if payload.get("kind") == "team":
                     token = self.auth.create_team_invite(
@@ -1890,16 +2085,17 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._json({"error": str(e)}, 400)
             except Exception as e:
+                # hotdata errors quote the failing SQL and name the system
+                # database; neither belongs in a browser
                 print(f"error: /api/invite: {e}", file=sys.stderr)
-                self._json({"error": str(e)[:300]}, 500)
+                self._json({"error": "could not create that invite"}, 500)
             return
         if path == "/api/device/start":
             try:
                 if self._rate_limited("device", limit=self.INVITE_RATE_LIMIT):
                     self._json({"error": "too many attempts; try again later"}, 429)
                     return
-                length = int(self.headers.get("Content-Length", 0))
-                payload = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+                payload = self._read_json()
                 # absent means "ingest": collectors in the field send no scope
                 # and must keep getting the credential they have always got.
                 # parse_scopes handles the string and list forms and refuses
@@ -1932,8 +2128,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": "unauthorized"}, 401)
                     return
                 org = viewer["org_slug"]
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+                body = self._read_json()
                 action = path[len("/api/admin/"):]
                 target = (body.get("email") or "").strip().lower()
 
@@ -1999,7 +2194,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True})
 
                 elif action == "revoke-token":
-                    self.auth.revoke_collector_token_for_org(body.get("token", ""), org)
+                    # a ref, not a token: the page was never given the token
+                    self.auth.revoke_collector_token_for_org(body.get("ref", ""), org)
                     self._json({"ok": True})
 
                 elif action == "rename-org":
@@ -2023,8 +2219,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not viewer:
                     self._json({"error": "unauthorized"}, 401)
                     return
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+                body = self._read_json()
                 self.auth.switch_org(viewer["email"], body.get("slug", ""))
                 self._json({"ok": True, "active": body.get("slug", "")})
             except ValueError as e:
@@ -2049,8 +2244,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/device/poll":
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                payload = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+                payload = self._read_json()
                 result = self.auth.poll_device(payload.get("device_code", ""))
                 if not result:
                     self._json({"status": "pending"})
@@ -2070,11 +2264,17 @@ class Handler(BaseHTTPRequestHandler):
                     self._redirect("/login")
                     return
                 form = self._read_form()
+                # TYPED, never prefilled: approving binds a collector to this
+                # account, and the person copying the code off that machine's
+                # screen is the only evidence the request is theirs
                 code = form.get("user_code", "")
+                # the page's own code rides in the form's action query, so a
+                # refusal lands back on that request instead of a bare /device
+                ctx = self._device_param(urlparse(self.path).query)
                 try:
                     self.auth.approve_device(code, viewer["email"])
-                except ValueError as e:
-                    self._redirect("/device?err=" + quote(str(e)))
+                except ValueError:
+                    self._redirect(self._device_url(ctx, "nomatch"))
                     return
                 self._redirect("/device?ok=1")
             except Exception as e:
@@ -2097,8 +2297,7 @@ class Handler(BaseHTTPRequestHandler):
             # overrides whatever address the payload claims. The shared ingest
             # token only admits: it cannot say who is reporting, so the claimed
             # address stands. Prefer the former.
-            presented = self.headers.get("Authorization", "")[len("Bearer "):] \
-                if self.headers.get("Authorization", "").startswith("Bearer ") else ""
+            presented = self._bearer()
             # constant-time: the shared token admits ingest for the whole
             # company, and == leaks its prefix length to a timing probe
             shared = bool(self.token) and hmac.compare_digest(
@@ -2127,7 +2326,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": f"bad payload: {e}"}, 400)
         except Exception as e:
             print(f"error: /ingest: {e}", file=sys.stderr)
-            self._json({"error": str(e)[:500]}, 500)
+            self._json({"error": "could not accept that payload"}, 500)
 
     # /healthz is public and unrated, and each deep probe costs one upstream
     # call, so the result is cached: many probes, at most one call per window.
@@ -2289,14 +2488,13 @@ class Handler(BaseHTTPRequestHandler):
                                                "SCOPE": "", "EMAIL": viewer["email"],
                                                "ERROR": ""})
                     return
-                code = (q.get("code", [""])[0] or "").strip().upper()
+                err = self._device_error(q.get("err", [""])[0])
+                code = self._device_param(parsed.query)
                 row = self.auth.get_device_by_user_code(code)
                 if not row or row["approved_email"]:
                     self._page("device.html", {"STATE": "bad", "CODE": code, "HOST": "",
                                                "SCOPE": "", "EMAIL": viewer["email"],
-                                               "ERROR": q.get("err", [""])[0][:200] or
-                                               "That sign-in request is invalid, "
-                                               "expired, or already approved."})
+                                               "ERROR": err or self.DEVICE_ERRORS["expired"]})
                     return
                 # the page must name what it is about to grant: approving read
                 # access hands a machine this org's usage, which is a different
@@ -2306,7 +2504,7 @@ class Handler(BaseHTTPRequestHandler):
                                            "HOST": row["hostname"] or "an unnamed machine",
                                            "SCOPE": AuthStore.join_scopes(scopes),
                                            "EMAIL": viewer["email"],
-                                           "ERROR": q.get("err", [""])[0][:200]})
+                                           "ERROR": err})
                 return
             if path.startswith("/static/"):
                 self._static(path[len("/static/"):])
@@ -2402,9 +2600,9 @@ class Handler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
         except Exception as e:
-            print(f"error: {path}: {e}", file=sys.stderr)
+            print(f"error: GET {path}: {e}", file=sys.stderr)
             try:
-                self._json({"error": str(e)[:500]}, 500)
+                self._json({"error": "that did not work"}, 500)
             except BrokenPipeError:
                 pass
 
@@ -2514,25 +2712,14 @@ def user_admin_cli(argv):
         print(f"new password for {a.target}: {password}")
 
     elif verb == "deluser":
+        # the same removal the admin page performs: a second copy here drifted
+        # from it once already, and what it forgets to delete is a credential
         email = a.target.strip().lower()
-        user = auth.get_user(email)
-        if not user:
+        if not auth.get_user(email):
             sys.exit(f"no such user: {email}")
-        toks = auth.sysdb.rows(f"SELECT token FROM {SYS}.public.auth_sessions "
-                               f"WHERE user_email = {sql_str(email)}")
-        if toks:
-            auth.sysdb.load("auth_sessions", toks, "delete")
         toks = auth.sysdb.rows(f"SELECT token FROM {SYS}.public.collector_tokens "
                                f"WHERE user_email = {sql_str(email)}")
-        if toks:
-            auth.sysdb.load("collector_tokens", toks, "delete")
-            drop_usage_rows(auth, toks)
-        for slug in auth.memberships(email):
-            auth.set_admin(email, slug, False)
-            auth.sysdb.load("org_memberships",
-                            [{"email": email, "org_slug": slug}], "delete")
-        auth.set_system_admin(email, False)
-        auth.sysdb.load("users", [{"email": email}], "delete")
+        auth.remove_user(email)
         print(f"deleted {email} ({len(toks)} collector token(s) revoked; their "
               f"already-ingested usage stays in the org database)")
 
@@ -2545,15 +2732,10 @@ def user_admin_cli(argv):
             sys.exit(f"org '{a.target}' still has {len(members)} member(s): "
                      + ", ".join(m["email"] for m in members)
                      + "\ndelete them first (server.py deluser <email>)")
-        held = auth.sysdb.rows(f"SELECT email, org_slug FROM {SYS}.public.org_memberships "
-                               f"WHERE org_slug = {sql_str(a.target)}")
-        if held:
-            auth.sysdb.load("org_memberships", held, "delete")
-        grants = auth.sysdb.rows(f"SELECT org_slug, email FROM {SYS}.public.org_admins "
-                                 f"WHERE org_slug = {sql_str(a.target)}")
-        if grants:
-            auth.sysdb.load("org_admins", grants, "delete")
-        auth.sysdb.load("orgs", [{"slug": a.target}], "delete")
+        # one implementation of "remove an empty org", so the CLI cannot leave
+        # behind the side rows the UI path sweeps (invites and team links were
+        # orphaned here, and a team link outliving its org is a live join URL)
+        auth.delete_empty_org(a.target)
         if a.delete_database and org.get("database_id"):
             import hotdata
             hotdata.DatabasesApi(auth.sysdb.client()).delete_database(org["database_id"])
@@ -2687,7 +2869,20 @@ def main():
     ap.add_argument("--system-database", default=core.SYSTEM_DATABASE_ID,
                     help="hotdata database holding orgs/users/auth_sessions")
     ap.add_argument("--ttl", type=int, default=60, help="seconds to cache hotdata reads")
+    ap.add_argument("--allow-open-ingest", action="store_true",
+                    help="bind publicly with no ingest token (accepts anonymous writes)")
     args = ap.parse_args()
+
+    token = os.environ.get("HOTUSAGE_INGEST_TOKEN", "")
+    loopback = args.host in ("127.0.0.1", "::1", "localhost")
+    # Dev mode (no token) means /ingest accepts anything anyone posts, which is
+    # fine while the socket is only reachable from this machine and is a public
+    # write endpoint the moment it is not. Refuse rather than boot into it.
+    if not token and not loopback and not args.allow_open_ingest:
+        sys.exit(f"refusing to bind {args.host} with HOTUSAGE_INGEST_TOKEN unset: "
+                 f"/ingest would accept anonymous writes from anyone who can "
+                 f"reach this port.\nSet HOTUSAGE_INGEST_TOKEN, bind 127.0.0.1, "
+                 f"or pass --allow-open-ingest if that is really what you want.")
 
     Handler.pool = ClientPool()
     Handler.auth = AuthStore(Handler.pool.get(args.system_database), Handler.pool)
@@ -2716,7 +2911,7 @@ def main():
                 time.sleep(60)
         threading.Thread(target=seed_retry, daemon=True, name="seed-retry").start()
     Handler.stores = StorePool(Handler.pool, args.ttl)
-    Handler.token = os.environ.get("HOTUSAGE_INGEST_TOKEN", "")
+    Handler.token = token
     if not Handler.token:
         print("warn: HOTUSAGE_INGEST_TOKEN unset - accepting unauthenticated ingest (dev mode)",
               file=sys.stderr)
