@@ -93,6 +93,32 @@ def test_the_device_code_parameter_is_validated():
     print("    4 junk values dropped, a good one survives the round trip")
 
 
+def test_the_approval_form_never_carries_the_code():
+    """The code must be typed, never prefilled.
+
+    A prefilled field turns approval into a single click from any link, and a
+    link is something anyone can send: SameSite=Lax permits the top-level GET
+    that lands on this page. Typing the code is the only evidence the person
+    approving is actually sitting at the machine that asked.
+
+    Asserted against the rendered page rather than the template source, because
+    the substitution is what would put the value back."""
+    print("the approval form:")
+    h, sent = page_handler()
+    h._page("device.html", {"STATE": "confirm", "CODE": "ABCD-1234",
+                            "HOST": "laptop.local", "SCOPE": "ingest,read",
+                            "EMAIL": "ada@x.dev", "ERROR": ""})
+    body = sent["body"]
+    field = body[body.index('id="user_code"'):]
+    field = field[:field.index(">")]
+    assert "value=" not in field, field
+    assert "ABCD-1234" not in field, field
+    assert "required" in field, field
+    # the code still has to reach the POST, just not the input
+    assert 'action="/device/approve?code=ABCD-1234"' in body
+    print("    the input is empty and required; the code rides in the action")
+
+
 # --- rate limiter -----------------------------------------------------------
 def rate_handler(ip="203.0.113.9", forwarded=None):
     h = server.Handler.__new__(server.Handler)
