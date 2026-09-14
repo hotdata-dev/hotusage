@@ -31,15 +31,55 @@ jobs:
       - name: Build image
         run: docker build -t "$GHCR_IMAGE:${{ github.sha }}" .
 
+      # The container binds 0.0.0.0, so it needs an ingest token to start at
+      # all -- see the open-ingest refusal below.
       - name: Smoke test (healthz)
         run: |
-          docker run -d --name hotusage -p 8377:8377 "$GHCR_IMAGE:${{ github.sha }}"
+          docker run -d --name hotusage -e HOTUSAGE_INGEST_TOKEN=ci-smoke \
+            -p 8377:8377 "$GHCR_IMAGE:${{ github.sha }}"
+          ok=""
           for i in $(seq 1 20); do
-            curl -sf http://127.0.0.1:8377/healthz && exit 0
+            curl -sf http://127.0.0.1:8377/healthz && ok=1 && break
             sleep 1
           done
-          docker logs hotusage
-          exit 1
+          if [ -z "$ok" ]; then
+            docker logs hotusage
+          fi
+          docker rm -f hotusage >/dev/null 2>&1 || true
+          test -n "$ok"
+
+      # The other half of the same guarantee: with no token on a public bind,
+      # the server must refuse to start rather than boot into dev mode, where
+      # /ingest accepts anonymous writes from anyone who can reach the port. A
+      # container still running after 10s means that refusal has regressed.
+      - name: Smoke test (refuses open ingest)
+        run: |
+          docker run -d --name hotusage-open -p 8378:8377 "$GHCR_IMAGE:${{ github.sha }}"
+          code=""
+          for i in $(seq 1 10); do
+            status=$(docker inspect -f '{{.State.Status}}' hotusage-open)
+            if [ "$status" != "running" ]; then
+              code=$(docker inspect -f '{{.State.ExitCode}}' hotusage-open)
+              break
+            fi
+            sleep 1
+          done
+          docker logs hotusage-open 2>&1 | tee open-ingest.log
+          docker rm -f hotusage-open >/dev/null 2>&1 || true
+          if [ -z "$code" ]; then
+            echo "still running with no ingest token: the refusal has regressed"
+            exit 1
+          fi
+          if [ "$code" = "0" ]; then
+            echo "exited cleanly with no ingest token; expected a non-zero refusal"
+            exit 1
+          fi
+          # and it must be *this* refusal, not some unrelated crash
+          grep -q "refusing to bind" open-ingest.log || {
+            echo "exited non-zero, but not with the open-ingest refusal"
+            exit 1
+          }
+          echo "refused to start with no ingest token (exit $code)"
 
       - name: Push to GHCR
         if: github.ref == 'refs/heads/main'
