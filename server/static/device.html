@@ -22,19 +22,17 @@
         <!-- the hostname is whatever that machine said it was called, so it is
              shown as a quoted value rather than woven into the sentence: a
              machine named "your account" must not be able to read as prose -->
-        <p class="devtext">A machine wants to sign in as <b>{{EMAIL}}</b> and:</p>
+        <p class="devtext">Sign in as <b>{{EMAIL}}</b> and:</p>
         <ul class="devtext" id="grants">
-          <li id="grant-ingest" hidden>report its coding-agent usage as you</li>
+          <li id="grant-ingest" hidden>report this machine's usage as you</li>
           <!-- the one grant worth spelling out: it hands this machine everyone
                else's sessions, which is a different decision from letting it
                report its own -->
-          <li id="grant-read" hidden><b>read your organization's usage</b> —
-            everyone's sessions, projects and costs</li>
+          <li id="grant-read" hidden><b>read your organization's usage</b></li>
         </ul>
-        <p class="devtext">machine name (self-reported):
+        <p class="devtext">machine (self-reported):
           <span class="devhost">{{HOST}}</span></p>
-        <p class="devtext"><b>Only approve this if you just started a sign-in on
-          that machine.</b></p>
+        <p class="devtext"><b>Only approve a sign-in you just started.</b></p>
         <!-- typed, not prefilled: the code is the only evidence the person
              clicking Approve is actually sitting at the machine that asked -->
         <form method="post" action="/device/approve?code={{CODE}}">
@@ -49,7 +47,7 @@
           </div>
           <button class="signin" type="submit" id="approve">Approve</button>
         </form>
-        <div class="alt">Not you? Close this page; the request expires on its own.</div>
+        <div class="alt">Not you? Close this page.</div>
       </div>
 
       <div id="done" hidden>
