@@ -13,8 +13,7 @@
   <div class="wrap">
     <div class="modal-err" id="err" hidden></div>
     <div class="notice" id="readonly" hidden>
-      You are a member of this organization. Only an admin can invite people,
-      remove them, or revoke collectors.
+      Only an admin can invite or remove people, or sign out a machine.
     </div>
 
     <div class="card">
@@ -119,14 +118,17 @@
         </table>
       </div>
       <div class="empty" id="collectorsEmpty" hidden>
-        Nobody has signed in a collector or a skill yet.
+        Nobody has installed hotusage yet.
       </div>
     </div>
 
+    <!-- the isolation model that used to be spelled out here is something the
+         person operating the server needs and the person administering a team
+         does not; it lives in docs/operating.md. What is left is the one
+         consequence of removing someone that is not obvious from doing it. -->
     <footer class="foot">
-      Removing a member revokes their logins and collectors; usage they already
-      reported stays in the organization's database. Organizations are isolated
-      by a dedicated hotdata database, not by a query filter.
+      Removing someone signs out all their machines. The usage they already
+      reported stays.
     </footer>
   </div>
 
@@ -155,10 +157,12 @@
           <input id="teamMaxUses" type="number" min="0" step="1" placeholder="Max uses"
                  aria-label="Maximum uses (0 for unlimited)">
         </div>
+        <!-- shortened, but the exposure stays: an unrestricted link is the one
+             control on this page that hands a stranger everyone's usage, and it
+             is the default until a domain is typed -->
         <p class="modal-hint">
-          Reusable for 30 days. Restrict it to your domain unless you are sharing it
-          privately &mdash; anyone holding an open link can join and read this
-          organization's usage.
+          Reusable for 30 days. Without a domain, <b>anyone with the link can join
+          and see your team's usage</b>.
         </p>
       </div>
       <div class="modal-result" id="linkOut" hidden>

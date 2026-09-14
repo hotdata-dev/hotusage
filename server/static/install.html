@@ -15,29 +15,28 @@
         <img class="mark" src="/static/icon.svg" width="22" height="22" alt="">
         <h1>hotusage</h1>
       </div>
-      <div class="sub" id="sub">Install the client to start collecting</div>
+      <div class="sub" id="sub">Install hotusage</div>
 
       <div id="waiting" hidden>
-        <p class="devtext"><b>{{ORG}}</b> has nothing reporting yet. The
-          dashboard fills from the hotusage client, which reads the usage your
-          coding agents already record and sends the numbers here.</p>
+        <p class="devtext">Nothing is reporting usage for <b>{{ORG}}</b> yet.
+          Install hotusage on a machine you code on and the dashboard fills up.</p>
 
-        <p class="devtext">Run this on your machine — macOS or Linux:</p>
+        <p class="devtext">macOS or Linux — paste this into a terminal:</p>
         <div class="cmdrow">
           <code class="cmd" id="cmd">curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh | sh</code>
           <button type="button" class="copy" id="copy">Copy</button>
         </div>
 
-        <p class="devtext">It installs in one step, then opens your browser to
-          approve the machine. Approve it as <b>{{EMAIL}}</b> and this page moves
-          on by itself.</p>
+        <!-- which account to approve as is the one thing here someone can get
+             wrong; that the page advances itself it will simply demonstrate -->
+        <p class="devtext">Your browser will ask you to approve the machine.
+          Approve it as <b>{{EMAIL}}</b>.</p>
 
         <p class="devtext waitline" id="waitline">Waiting for your first machine…</p>
 
-        <div class="alt">On Windows? Take the <code>.zip</code> from the
-          <a href="https://github.com/hotdata-dev/hotusage-client/releases">latest
-          release</a>, put <code>hotusage.exe</code> on your PATH, and run
-          <code>hotusage install</code>.</div>
+        <div class="alt">On Windows? <a
+          href="https://github.com/hotdata-dev/hotusage-client/releases">Download
+          it here</a> and run <code>hotusage install</code>.</div>
         <!-- a prompt, not a wall: someone who is signing in to manage the org
              rather than to report usage has no machine to install on, and
              trapping them here would make the organization page unreachable
@@ -47,9 +46,8 @@
       </div>
 
       <div id="done" hidden>
-        <p class="devtext"><b>Connected.</b> A machine is reporting usage for
-          <b>{{EMAIL}}</b>. The first sync runs immediately; a session shows up
-          once your coding agent has written one.</p>
+        <p class="devtext"><b>Connected.</b> A machine is now reporting usage for
+          <b>{{EMAIL}}</b>. Sessions appear as you use your coding agent.</p>
         <a class="signin cta" href="{{NEXT}}" id="go">Go to the dashboard</a>
       </div>
     </div>
