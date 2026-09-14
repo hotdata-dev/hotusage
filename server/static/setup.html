@@ -18,9 +18,10 @@
       <div class="sub">Create your organization</div>
       <div class="err" id="err">{{ERROR}}</div>
 
-      <p class="devtext">Your account <b>{{EMAIL}}</b> does not belong to an
-        organization yet. An organization owns its own database: your usage, and
-        your team's, is collected and read there.</p>
+      <!-- the address stays: it is how someone signed in to the wrong account
+           notices before they create an organization under it -->
+      <p class="devtext">Signed in as <b>{{EMAIL}}</b>. Your team's usage is
+        collected under this organization.</p>
 
       <form method="post" action="/setup">
         <input type="hidden" name="next" value="{{NEXT}}">
@@ -32,9 +33,8 @@
         <button class="signin" type="submit">Create organization</button>
       </form>
 
-      <div class="alt">Joining a team instead? Ask an admin there for an invite
-        link &mdash; opening it adds this account to their organization, and you
-        can skip this step.</div>
+      <div class="alt">Joining a team instead? Open the invite link an admin
+        sends you.</div>
       <div class="alt"><a href="/logout">Sign out</a></div>
     </div>
   </div>
