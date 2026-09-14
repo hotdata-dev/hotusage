@@ -131,8 +131,8 @@ function syncCell(v, read) {
   const cls = ms === null ? 'never' : (Date.now() - ms < DAY_MS ? 'ok' : 'stale');
   const verb = read ? 'used' : 'reported';
   const title = ms === null
-    ? `this ${read ? 'sign-in has not been used' : 'collector has not reported'} yet`
-    : `last ${verb} ${stampText(v)} UTC (this stamp refreshes at most hourly)`;
+    ? `this ${read ? 'sign-in has not been used' : 'machine has not reported'} yet`
+    : `last ${verb} ${stampText(v)} UTC (updated at most hourly)`;
   return el('span', { class: 'sync', title },
     el('span', { class: 'dot ' + cls }),
     el('span', { text: ms === null ? 'never' : ago(ms) }));
@@ -154,7 +154,10 @@ function renderMembers() {
       controls.append(b);
       if (!self) {
         const r = action('Remove', true, () => {
-          if (!confirm(`Remove ${m.email} from this organization? If this is their only organization, their account and collectors are removed too.`)) return;
+          // the account deletion is the part that cannot be undone from this
+          // page, so it stays in the dialog; which organizations they are in
+          // is something the person clicking Remove can already see
+          if (!confirm(`Remove ${m.email}? Their machines stop reporting, and if this is their only organization their account goes too.`)) return;
           act(() => api('/api/admin/remove-user', { email: m.email }));
         });
         controls.append(r);
@@ -197,10 +200,10 @@ function renderCollectors() {
     const read = scopes.includes('read');
     const ingest = scopes.includes('ingest');
     const loses = [ingest && 'stops reporting usage',
-      read && 'can no longer answer questions about this organization']
+      read && 'can no longer read this organization\'s usage']
       .filter(Boolean).join(', and ');
     const revoke = action('Revoke', true, () => {
-      if (!confirm(`Revoke ${c.hostname || 'that machine'}? It ${loses}.`)) return;
+      if (!confirm(`Sign out ${c.hostname || 'that machine'}? It ${loses}.`)) return;
       // token_ref, never the token: the state payload carries no credential
       act(() => api('/api/admin/revoke-token', { ref: c.token_ref }));
     });

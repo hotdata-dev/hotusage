@@ -78,15 +78,18 @@
       <div id="sessions"></div>
     </div>
 
+    <!-- The one thing here that changes what someone does with these numbers is
+         that they are not a bill. The per-model multipliers behind them, and
+         where the rows come from, answer questions nobody reading a dashboard
+         is asking; both are in the README for anyone who is. -->
     <footer class="foot">
-      Dollar figures are <b>API list-price equivalents, not a bill</b> (Anthropic: cache
-      read 0.1x input, cache writes 1.25x / 2x input, fast mode at its premium rate;
-      OpenAI: cached input ~10% of input). Subscription plans &mdash; Max, Team,
-      Enterprise &mdash; charge a flat per-seat fee and bill none of this; see the spend
-      report in your Claude admin console for actual cost.
-      Served from the hotdata <code>hotusage</code> database, fed by per-user hotusage
-      collectors (Claude Code, Codex, and OpenCode history; Cursor and Gemini CLI keep
-      no local token counts).
+      Dollar figures are <b>API list-price equivalents, not a bill</b>. On a Max,
+      Team or Enterprise plan you pay a flat fee per person instead &mdash; your
+      Claude admin console has the real spend.
+      <!-- kept, unlike the rest: someone looking for Cursor here and finding
+           nothing has no other way to learn it is never coming -->
+      Covers Claude Code, Codex and OpenCode &mdash; Cursor and Gemini CLI keep no
+      usage on your machine to read.
     </footer>
   </div>
 
