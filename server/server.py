@@ -1022,6 +1022,24 @@ class AuthStore:
         table would be one more thing to keep in step with a revoke."""
         return hashlib.sha256(token.encode()).hexdigest()[:16]
 
+    def has_collector(self, email):
+        """Has this account ever had a machine sign in?
+
+        The signal the install prompt turns off. A collector token is minted
+        only by approving a device, and approving a device needs the binary
+        running on a machine -- so a row here is proof the client was installed,
+        which nothing else on the account can fake.
+
+        Deliberately not "has usage arrived": a machine that signed in but has
+        not opened a coding session yet reports nothing, and gating on data
+        would hold someone at the prompt they had already satisfied.
+
+        Revoking every machine puts the prompt back, which is right -- the
+        account is once again one with nothing reporting."""
+        return bool(self.sysdb.rows(
+            f"SELECT token FROM {SYS}.public.collector_tokens "
+            f"WHERE user_email = {sql_str(email)} LIMIT 1"))
+
     def _org_token_rows(self, org_slug, active=None):
         """The raw collector-token rows belonging to this org, tokens included.
 
@@ -1813,6 +1831,49 @@ class Handler(BaseHTTPRequestHandler):
             cookie += "; Secure"
         return cookie
 
+    # How long "skip for now" lasts. A browser-side decision, not an account
+    # one: hotdata fixes a table's columns at first write, so recording this on
+    # the user would mean a new side table and a migration for a preference
+    # that a re-prompt costs one click to undo.
+    INSTALL_SKIP_TTL = 30 * 24 * 60 * 60
+
+    def _install_skip_cookie(self, max_age=None):
+        cookie = (f"hotusage_install_skipped=1; HttpOnly; SameSite=Lax; Path=/; "
+                  f"Max-Age={self.INSTALL_SKIP_TTL if max_age is None else max_age}")
+        if self._public_origin()[0] == "https":
+            cookie += "; Secure"
+        return cookie
+
+    def _install_skipped(self):
+        header = self.headers.get("Cookie", "")
+        return any(part.strip().startswith("hotusage_install_skipped=1")
+                   for part in header.split(";"))
+
+    def _gated_on_install(self, viewer, path):
+        """Send an account with nothing reporting to the install prompt.
+
+        An empty dashboard looks like a broken one, so the first thing a new
+        organization sees is how to make it fill up. Redirects and returns True
+        when it handled the request.
+
+        A method rather than a line in the page gate, because /admin does its
+        own sign-in and org checks above that gate: the two places that decide
+        who may see a page have to agree about this too, and the way they
+        stopped agreeing last time was one of them not being edited.
+
+        Pages only. /api/ is deliberately exempt -- the collector's own read
+        token authenticates there, so gating it would break the skill for
+        precisely the machines whose existence proves the client is installed.
+        Everything needed to satisfy the prompt (/device, /device/approve,
+        /static, /logout) is routed before either gate, and /install itself is
+        exempt here, so the gate can never close over its own exit."""
+        if path.startswith("/api/") or path in ("/install", "/install/skip"):
+            return False
+        if self._install_skipped() or self.auth.has_collector(viewer["email"]):
+            return False
+        self._redirect("/install?next=" + quote(self.path))
+        return True
+
     def _page(self, name, subs=None):
         """Serve a static page with {{PLACEHOLDER}} substitution, HTML-escaped.
 
@@ -2467,6 +2528,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not viewer.get("org_slug"):  # nothing to administer yet
                     self._redirect("/setup?next=" + quote(self.path))
                     return
+                if self._gated_on_install(viewer, path):
+                    return
                 self._static("admin.html")
                 return
             if path == "/device":
@@ -2534,6 +2597,32 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": "you do not belong to an organization yet"}, 409)
                 else:
                     self._redirect("/setup?next=" + quote(self.path))
+                return
+
+            if self._gated_on_install(viewer, path):
+                return
+
+            if path == "/install":
+                nxt = self._safe_next(parse_qs(parsed.query).get("next", ["/"])[0])
+                # reachable on purpose after a machine exists, so the page can
+                # be the thing that says "connected" rather than vanishing the
+                # moment it succeeds
+                self._page("install.html", {
+                    "NEXT": nxt, "EMAIL": viewer["email"],
+                    "ORG": viewer.get("org_name") or viewer["org_slug"],
+                    "STATE": "done" if self.auth.has_collector(viewer["email"])
+                             else "waiting"})
+                return
+            if path == "/install/skip":
+                self._redirect(self._safe_next(
+                    parse_qs(parsed.query).get("next", ["/"])[0]),
+                    extra=[("Set-Cookie", self._install_skip_cookie())])
+                return
+            if path == "/api/install-status":
+                # what the install page polls; deliberately the thinnest answer
+                # that can end the wait, and nothing an unapproved caller could
+                # learn from it that /api/status would not already tell them
+                self._json({"ready": self.auth.has_collector(viewer["email"])})
                 return
 
             if path == "/" or path == "/index.html":

@@ -12,6 +12,7 @@ Run: python3 server/tests/test_auth_store.py
 import os
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(
@@ -126,6 +127,27 @@ class StatefulSysDb:
             col = col.split(".")[-1]
             wanted = set(re.findall(r"'([^']*)'", vals))
             out = [r for r in out if str(r.get(col, "")) in wanted]
+        # Unquoted numeric comparison, which is how expiry is asked about:
+        # `WHERE expires_at < 1789...`. Without this the clause was ignored and
+        # every row matched, so _purge_expired -- which runs on the way into
+        # EVERY request -- deleted every session, invite and device code the
+        # moment it was written. Nothing caught it because the suites that
+        # existed authenticate with bearer tokens rather than cookies, and a
+        # test of any flow that spans two requests would have failed for a
+        # reason that had nothing to do with the flow.
+        for col, op, val in re.findall(
+                r"([\w.]+) (<=|>=|<|>) (-?\d+(?:\.\d+)?)", flat):
+            col, val = col.split(".")[-1], float(val)
+
+            def cmp(r, op=op, col=col, val=val):
+                try:
+                    have = float(r.get(col))
+                except (TypeError, ValueError):
+                    return False
+                return {"<": have < val, ">": have > val,
+                        "<=": have <= val, ">=": have >= val}[op]
+
+            out = [r for r in out if cmp(r)]
         return out
 
     def load(self, table, rows, mode):
@@ -531,6 +553,36 @@ def test_a_cached_session_is_re_read_within_a_minute():
     db.load("auth_sessions", [{"token": token}], "delete")
     assert auth.user_for_token(token) is None, "a deleted session must not read"
     print("    once the cap passes, a revoked session is refused")
+
+
+def test_the_purge_sweeps_only_what_has_actually_expired():
+    """A test of the fake, which is unusual and is the point.
+
+    StatefulSysDb understood `col = 'value'` and `col IN (...)` but not `<`, so
+    _purge_expired's `WHERE expires_at < now` matched every row. Since the purge
+    runs on the way into every request, each call deleted every session, invite
+    and device code in the store. Nothing noticed, because the suites that
+    existed authenticate with bearer tokens -- the damage only shows in a flow
+    that spans two requests as a browser, and there were none until the install
+    gate got one."""
+    print("the expiry sweep:")
+    db = StatefulSysDb()
+    auth = server.AuthStore(db, FakePool())
+    auth.create_account("ada@x.dev", "hunter2hunter2")
+    live = auth.login("ada@x.dev", "hunter2hunter2")
+    _, user_code = auth.start_device_auth("laptop")
+
+    stale = "expired-session"
+    db.load("auth_sessions", [{"token": stale, "user_email": "ada@x.dev",
+                               "expires_at": time.time() - 60}], "upsert")
+
+    auth._purge_expired()
+
+    assert auth.user_for_token(live), "a live session was swept"
+    assert auth.get_device_by_user_code(user_code), "a live device code was swept"
+    remaining = [r["token"] for r in db.tables["auth_sessions"]]
+    assert stale not in remaining, f"the expired row survived: {remaining}"
+    print("    the expired row is gone, the live session and device code stay")
 
 
 if __name__ == "__main__":
