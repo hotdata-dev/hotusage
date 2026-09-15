@@ -31,7 +31,7 @@ def page_handler():
 
 
 def render(template, subs):
-    tmp = tempfile.mkdtemp(prefix="hotusage-test-")
+    tmp = tempfile.mkdtemp(prefix="hototel-test-")
     real = server.STATIC_DIR
     try:
         with open(os.path.join(tmp, "page.html"), "w") as f:

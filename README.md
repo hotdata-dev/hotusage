@@ -1,13 +1,13 @@
 <img src="docs/logo.png" alt="" width="72" height="72">
 
-# hotusage
+# hototel
 
 Company-wide usage analytics for AI coding agents — Claude Code, Codex and
 OpenCode. See who is using them, on which projects, with which models, and what
 it would cost, across your whole team.
 
-This is the server. It runs at **hotusage.ai**, so most people never install
-it — you just need an invite.
+This is the server. It runs at **hototel.com** (formerly hotusage.ai, which
+still works), so most people never install it — you just need an invite.
 
 ## Getting your team on it
 
@@ -15,7 +15,7 @@ Your admin sends you an invite link. Open it, pick a password, then install the
 client on each machine:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hototel-client/main/install.sh | sh
 ```
 
 Your browser opens, you approve the machine, and it starts reporting. From then
@@ -79,5 +79,5 @@ is active — the org their dashboard shows and their machines report into.
 
 ---
 
-Running your own instance, or working on hotusage itself?
+Running your own instance, or working on hototel itself?
 See [`docs/operating.md`](docs/operating.md).

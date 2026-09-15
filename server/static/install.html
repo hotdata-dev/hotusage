@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>hotusage - install the client</title>
+  <title>hototel - install the client</title>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="/static/icon.svg">
   <link rel="stylesheet" href="/static/auth.css">
@@ -13,17 +13,17 @@
     <div class="login-card">
       <div class="brandrow">
         <img class="mark" src="/static/icon.svg" width="22" height="22" alt="">
-        <h1>hotusage</h1>
+        <h1>hototel</h1>
       </div>
-      <div class="sub" id="sub">Install hotusage</div>
+      <div class="sub" id="sub">Install hototel</div>
 
       <div id="waiting" hidden>
         <p class="devtext">Nothing is reporting usage for <b>{{ORG}}</b> yet.
-          Install hotusage on a machine you code on and the dashboard fills up.</p>
+          Install hototel on a machine you code on and the dashboard fills up.</p>
 
         <p class="devtext">macOS or Linux — paste this into a terminal:</p>
         <div class="cmdrow">
-          <code class="cmd" id="cmd">curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hotusage-client/main/install.sh | sh</code>
+          <code class="cmd" id="cmd">curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hototel-client/main/install.sh | sh</code>
           <button type="button" class="copy" id="copy">Copy</button>
         </div>
 
@@ -35,7 +35,7 @@
         <p class="devtext waitline" id="waitline">Waiting for your first machine…</p>
 
         <div class="alt">On Windows? <a
-          href="https://github.com/hotdata-dev/hotusage-client/releases">Download
+          href="https://github.com/hotdata-dev/hototel-client/releases">Download
           it here</a> and run <code>hotusage install</code>.</div>
         <!-- a prompt, not a wall: someone who is signing in to manage the org
              rather than to report usage has no machine to install on, and
