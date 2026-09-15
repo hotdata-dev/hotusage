@@ -6,8 +6,8 @@ Company-wide usage analytics for AI coding agents — Claude Code, Codex and
 OpenCode. See who is using them, on which projects, with which models, and what
 it would cost, across your whole team.
 
-This is the server. It runs at **hototel.com** (formerly hotusage.ai, which still works), so most people never install
-it — you just need an invite.
+This is the server. It runs at **hototel.com** (formerly hotusage.ai, which
+still works), so most people never install it — you just need an invite.
 
 ## Getting your team on it
 
