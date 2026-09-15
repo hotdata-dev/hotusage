@@ -102,7 +102,7 @@
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') menu.hidden = true; });
 
   const brand = node('a', { class: 'brand', href: '/' },
-    node('h1', { text: 'hotusage' }));
+    node('h1', { text: 'hototel' }));
   // innerHTML, not a parsed node: the mark is a literal above, never user input
   brand.prepend(Object.assign(document.createElement('span'),
                               { className: 'markwrap', innerHTML: MARK }));

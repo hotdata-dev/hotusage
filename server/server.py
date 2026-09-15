@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""hotusage server — central collection point + admin dashboard, hotdata-only.
+"""hototel server — central collection point + admin dashboard, hotdata-only.
 
 Two planes, all in hotdata (no local database):
 
@@ -283,7 +283,7 @@ class HotdataClient:
         spec = TABLES[table]
         select = ", ".join(f"{c}::{t} AS {c}" for c, t in spec["cols"]
                            if mode != "delete" or c in spec["key"])
-        with self.write_lock, tempfile.TemporaryDirectory(prefix="hotusage-") as tmp:
+        with self.write_lock, tempfile.TemporaryDirectory(prefix="hototel-") as tmp:
             jl = os.path.join(tmp, "rows.jsonl")
             pq = os.path.join(tmp, "rows.parquet")
             with open(jl, "w") as f:
@@ -3005,9 +3005,9 @@ def main():
         print("warn: HOTUSAGE_INGEST_TOKEN unset - accepting unauthenticated ingest (dev mode)",
               file=sys.stderr)
 
-    print(f"hotusage server: system database {args.system_database} (accounts + auth)")
-    print("hotusage server: per-org usage databases resolved from the orgs table")
-    print(f"hotusage server: listening on http://{args.host}:{args.port}/  (Ctrl-C to stop)")
+    print(f"hototel server: system database {args.system_database} (accounts + auth)")
+    print("hototel server: per-org usage databases resolved from the orgs table")
+    print(f"hototel server: listening on http://{args.host}:{args.port}/  (Ctrl-C to stop)")
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 
@@ -3015,4 +3015,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nhotusage server: stopped")
+        print("\nhototel server: stopped")

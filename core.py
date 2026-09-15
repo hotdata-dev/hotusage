@@ -1,7 +1,7 @@
-"""hotusage constants and hotdata credentials, shared by server/server.py.
+"""hototel (formerly hotusage) constants and hotdata credentials, shared by server/server.py.
 
 Nothing here parses or prices anything. Transcript parsing, the rate tables and
-session building live in the collector, hotusage-client's src/core.rs; every
+session building live in the collector, hototel-client's src/core.rs; every
 cost_* column arrives already computed in the ingest payload. This module used
 to carry a Python copy of all of it, kept for a collector that no longer exists
 in this repository -- by then the copy had drifted from the live tables (no fast

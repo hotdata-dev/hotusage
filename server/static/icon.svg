@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <title>hotusage</title>
+  <title>hototel</title>
   <!-- The header mark as a favicon: nine cells warming toward the corner.
        Colours are literal because CSS variables cannot resolve inside an icon.
        The neutral grey is the value of the muted token, the one token whose

@@ -1,4 +1,4 @@
-# hotusage server: ingest + admin dashboard, all state in hotdata.
+# hototel server: ingest + admin dashboard, all state in hotdata.
 FROM python:3.12-slim
 
 RUN pip install --no-cache-dir hotdata duckdb && \

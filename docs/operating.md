@@ -1,4 +1,4 @@
-# hotusage server — operating
+# hototel server — operating
 
 Everything the [README](../README.md) leaves out: running the server, the
 platform-operator powers, the CLI, and the parts of the design worth knowing
@@ -130,7 +130,7 @@ happens to join next.
 
 The server never prices anything; it stores the `cost_*` columns the ingest
 payload already carries. To reprice a provider, edit `rates_claude` /
-`rates_claude_fast` / `rates_openai` in **hotusage-client's** `src/core.rs`.
+`rates_claude_fast` / `rates_openai` in **hototel-client's** `src/core.rs`.
 
 This repo's `core.py` used to carry a Python copy of those tables, for a
 collector that no longer lives here. It had drifted from the live ones and was

@@ -6,7 +6,7 @@ on:
   pull_request:
 
 env:
-  GHCR_IMAGE: ghcr.io/hotdata-dev/hotusage
+  GHCR_IMAGE: ghcr.io/hotdata-dev/hototel-server
 
 permissions:
   contents: read
@@ -35,7 +35,7 @@ jobs:
       # all -- see the open-ingest refusal below.
       - name: Smoke test (healthz)
         run: |
-          docker run -d --name hotusage -e HOTUSAGE_INGEST_TOKEN=ci-smoke \
+          docker run -d --name hototel -e HOTUSAGE_INGEST_TOKEN=ci-smoke \
             -p 8377:8377 "$GHCR_IMAGE:${{ github.sha }}"
           ok=""
           for i in $(seq 1 20); do
@@ -43,9 +43,9 @@ jobs:
             sleep 1
           done
           if [ -z "$ok" ]; then
-            docker logs hotusage
+            docker logs hototel
           fi
-          docker rm -f hotusage >/dev/null 2>&1 || true
+          docker rm -f hototel >/dev/null 2>&1 || true
           test -n "$ok"
 
       # The other half of the same guarantee: with no token on a public bind,
@@ -54,18 +54,18 @@ jobs:
       # container still running after 10s means that refusal has regressed.
       - name: Smoke test (refuses open ingest)
         run: |
-          docker run -d --name hotusage-open -p 8378:8377 "$GHCR_IMAGE:${{ github.sha }}"
+          docker run -d --name hototel-open -p 8378:8377 "$GHCR_IMAGE:${{ github.sha }}"
           code=""
           for i in $(seq 1 10); do
-            status=$(docker inspect -f '{{.State.Status}}' hotusage-open)
+            status=$(docker inspect -f '{{.State.Status}}' hototel-open)
             if [ "$status" != "running" ]; then
-              code=$(docker inspect -f '{{.State.ExitCode}}' hotusage-open)
+              code=$(docker inspect -f '{{.State.ExitCode}}' hototel-open)
               break
             fi
             sleep 1
           done
-          docker logs hotusage-open 2>&1 | tee open-ingest.log
-          docker rm -f hotusage-open >/dev/null 2>&1 || true
+          docker logs hototel-open 2>&1 | tee open-ingest.log
+          docker rm -f hototel-open >/dev/null 2>&1 || true
           if [ -z "$code" ]; then
             echo "still running with no ingest token: the refusal has regressed"
             exit 1
@@ -92,7 +92,7 @@ jobs:
       # Mirror into the labs ECR repo App Runner pulls from (App Runner cannot
       # pull private GHCR). Inert until the AWS_LABS_ECR_ROLE_ARN and
       # AWS_LABS_ECR_REPO repo variables are set (created by the
-      # aws-hotdata-labs Terraform; see its hotusage_* outputs).
+      # aws-hotdata-labs Terraform; see its hototel_* outputs).
       # Cross-account OIDC fails with one opaque STS message whether the role
       # is missing or the trust policy does not match the token. Print the
       # claims AWS is being asked to trust plus the raw STS error, so the fix
@@ -117,7 +117,7 @@ jobs:
           echo "--- raw sts:AssumeRoleWithWebIdentity error (if any) ---"
           aws sts assume-role-with-web-identity \
             --role-arn "${{ vars.AWS_LABS_ECR_ROLE_ARN }}" \
-            --role-session-name hotusage-ci-diag \
+            --role-session-name hototel-ci-diag \
             --web-identity-token "$TOKEN" \
             --region us-west-2 --query 'AssumedRoleUser.Arn' --output text 2>&1 | tail -3
           echo "If this says 'Not authorized': either the role does not exist yet"
