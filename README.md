@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/hotdata-dev/hototel-client/main/ins
 ```
 
 Your browser opens, you approve the machine, and it starts reporting. From then
-on it syncs by itself. Headless machines run `hotusage signin` instead, which
+on it syncs by itself. Headless machines run `hototel signin` instead, which
 prints a URL and a code to approve from any browser.
 
 Two ways to see the numbers: open the **dashboard**, or ask your coding agent —
