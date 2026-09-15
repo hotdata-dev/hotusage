@@ -1,4 +1,5 @@
-"""hototel (formerly hotusage) constants and hotdata credentials, shared by server/server.py.
+"""hototel (formerly hotusage) constants and hotdata credentials, shared by
+server/server.py.
 
 Nothing here parses or prices anything. Transcript parsing, the rate tables and
 session building live in the collector, hototel-client's src/core.rs; every
